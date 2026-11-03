@@ -2,7 +2,7 @@
 -- [ INK - SQUID GAME AUTOMATION & UTILITIES HUB ]
 -- Built with Syntaxis GUI Library v2.0.0 (https://github.com/quantumdingle123/GUILib)
 -- Repository: https://github.com/quantumdingle123/InkBySyntax
--- Fully refactored for stealth, mobile safety, anti-detection, and clean gameplay.
+-- Fully refactored for stealth, mobile safety, zero metatable hooks, and clean gameplay.
 -- ==============================================================================
 
 -- 1. LOAD SYNTAXIS GUI LIBRARY
@@ -25,7 +25,7 @@ local mouse = localPlayer:GetMouse()
 local camera = Workspace.CurrentCamera
 
 -- ==============================================================================
--- [1. STEALTH & ANTI-DETECTION ENGINE]
+-- [1. STEALTH & NOTIFICATION ENGINE]
 -- ==============================================================================
 local function notify(title, content, duration)
     pcall(function()
@@ -40,37 +40,7 @@ local function notify(title, content, duration)
     end)
 end
 
--- Client Anti-Kick Interceptor: Protects client from arbitrary game kicks
-if typeof(hookmetamethod) == "function" and typeof(newcclosure) == "function" then
-    pcall(function()
-        local origNamecall
-        origNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
-            local method = getnamecallmethod()
-            if (tostring(method) == "Kick" or tostring(method) == "kick") and self == localPlayer then
-                local args = { ... }
-                local reason = tostring(args[1] or "No reason provided")
-                warn("[InkBySyntax] Intercepted kick attempt:", reason)
-                notify("Security Alert", "Game attempted to kick: " .. reason, 8)
-                return nil
-            end
-            return origNamecall(self, ...)
-        end))
-    end)
-
-    pcall(function()
-        if typeof(hookfunction) == "function" and typeof(localPlayer.Kick) == "function" then
-            local origKick
-            origKick = hookfunction(localPlayer.Kick, newcclosure(function(self, ...)
-                local args = { ... }
-                local reason = tostring(args[1] or "No reason provided")
-                warn("[InkBySyntax] Intercepted direct Kick():", reason)
-                notify("Security Alert", "Game attempted to kick: " .. reason, 8)
-                return nil
-            end))
-        end
-    end)
-end
-
+-- Metamethod hooks removed for zero-detection stealth
 -- ==============================================================================
 -- [2. GLOBAL STATE & CONNECTION MANAGEMENT]
 -- ==============================================================================
@@ -106,7 +76,7 @@ local State = {
     bandageHelperEnabled = false,
 
     -- Automation & Utilities
-    bypassMovementChecks = true,
+    bypassMovementChecks = false,
     arcadeAutoFarmEnabled = false,
     instantBoxMachineEnabled = false,
     playerEspEnabled = false,
@@ -285,9 +255,9 @@ local function setPlayerFrozen(freeze)
 end
 
 -- ==============================================================================
--- [4. INITIALIZE SYNTAXIS GUI WINDOW]
+-- [4. INITIALIZE SYNTAXIS GUI WINDOW (Pure Random GUID)]
 -- ==============================================================================
-local disguisedGuiName = "RobloxGuiPrompt_" .. string.sub(HttpService:GenerateGUID(false), 1, 8)
+local disguisedGuiName = HttpService:GenerateGUID(false)
 
 local Window = SyntaxisLib:CreateWindow({
     Title = "InkBySyntax",
@@ -1593,8 +1563,8 @@ end)
 -- ------------------------------------------------------------------------------
 local CatProtection = UtilitiesTab:CreateCategory("Performance & Protection", true, 2)
 
--- Movement Check Bypass (Sends DashRequest heartbeats to keep server anti-cheat satisfied)
-CatProtection:CreateToggle("Bypass Movement Checks", "Sends natural movement signals to prevent anti-cheat kicks", true, function(enabled)
+-- Movement Check Bypass (Manual toggle: only sends DashRequest when explicitly turned on)
+CatProtection:CreateToggle("Bypass Movement Checks", "Sends natural movement signals to prevent anti-cheat kicks", false, function(enabled)
     State.bypassMovementChecks = enabled
     if enabled then
         if not Threads.bypassThread then
@@ -1635,25 +1605,20 @@ CatProtection:CreateToggle("Anti Push / Anti Ragdoll", "Cleanses physics locks a
     end
 end)
 
--- Anti-AFK: Lazy-loads VirtualUser inside pcall only when activated
-CatProtection:CreateToggle("Anti-AFK", "Prevents 20-minute idle disconnection", false, function(enabled)
+-- Anti-AFK: Clean connection disabler matching working stealth pattern
+CatProtection:CreateToggle("Anti-AFK", "Disables 20-minute idle disconnection", false, function(enabled)
     State.antiAfkEnabled = enabled
-    if enabled then
-        if not getgenv().inkAntiAfkConn then
-            getgenv().inkAntiAfkConn = localPlayer.Idled:Connect(function()
-                pcall(function()
-                    local vu = game:GetService("VirtualUser")
-                    if vu then
-                        vu:CaptureController()
-                        vu:ClickButton2(Vector2.new())
-                    end
-                end)
-            end)
+    pcall(function()
+        if typeof(getconnections) == "function" then
+            for _, conn in pairs(getconnections(localPlayer.Idled)) do
+                if enabled then
+                    conn:Disable()
+                else
+                    conn:Enable()
+                end
+            end
         end
-    elseif getgenv().inkAntiAfkConn then
-        getgenv().inkAntiAfkConn:Disconnect()
-        getgenv().inkAntiAfkConn = nil
-    end
+    end)
 end)
 
 CatProtection:CreateToggle("Infinite Jump", "Allows jumping continuously mid-air", false, function(enabled)
