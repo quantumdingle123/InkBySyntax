@@ -8,6 +8,17 @@
 -- 1. LOAD SYNTAXIS GUI LIBRARY
 local SyntaxisLib = loadstring(game:HttpGet("https://raw.githubusercontent.com/quantumdingle123/GUILib/main/SyntaxisLib.lua"))()
 
+-- Stealth Safe Container: Enforce gethui / CoreGui strictly (never fall back to PlayerGui)
+if SyntaxisLib and SyntaxisLib.Utils then
+    SyntaxisLib.Utils.GetSafeParent = function()
+        local safeContainer = game:GetService("CoreGui")
+        if gethui then
+            pcall(function() safeContainer = gethui() end)
+        end
+        return safeContainer
+    end
+end
+
 -- 2. SAFE ROBLOX CORE SERVICES (No restricted services on startup)
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
