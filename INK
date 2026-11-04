@@ -78,11 +78,11 @@ local State = {
 
     -- Rebel Weaponry & Combat
     autoShootEnabled = false,
-    silentAimEnabled = false,
     noRecoilEnabled = false,
     rapidFireEnabled = false,
     infiniteAmmoEnabled = false,
-    camLockEnabled = false,
+    aimbotEnabled = false,
+    aimbotTargetPart = "Head", -- "Head" or "Torso"
     autoQTEEnabled = false,
     bandageHelperEnabled = false,
 
@@ -118,26 +118,8 @@ local Timestamps = {
 -- [3. SUPPORT HELPERS & GAME INTROSPECTION]
 -- ==============================================================================
 
--- [3.1] Mobile-Safe Key Simulation
-local VirtualKeycodes = {
-    w = 87, a = 65, s = 83, d = 68, space = 32,
-    e = 69, q = 81, f = 70, r = 82, t = 84,
-    y = 89, x = 88, c = 67, v = 86, b = 66,
-    g = 71, h = 72, z = 90
-}
-
-local function simulateKey(keyName)
-    if typeof(keypress) == "function" and typeof(keyrelease) == "function" then
-        local code = VirtualKeycodes[string.lower(tostring(keyName))]
-        if code then
-            pcall(keypress, code)
-            task.wait(0.04)
-            pcall(keyrelease, code)
-            return true
-        end
-    end
-    return false
-end
+-- [3.1] Mobile-Safe Architecture: Zero Virtual Input
+-- All virtual keypresses and simulated mouse clicks are forbidden for mobile integrity.
 
 -- [3.2] Mini-Game State Detector (500ms Caching)
 local cachedGame = nil
@@ -480,25 +462,7 @@ CatDalgona:CreateToggle("Free Lighter", "Gives cosmetic lighter item for cookie 
     end
 end)
 
-CatDalgona:CreateToggle("Auto Relax", "Keeps cookie stress gauge completely empty", false, function(enabled)
-    State.autoRelaxEnabled = enabled
-    if enabled then
-        Threads.autoRelaxThread = task.spawn(function()
-            while State.autoRelaxEnabled do
-                if isCurrentGame("Dalgona") then
-                    local pGui = localPlayer:FindFirstChild("PlayerGui")
-                    local dalgonaUI = pGui and pGui:FindFirstChild("DalgonaUI")
-                    local stressBar = dalgonaUI and dalgonaUI:FindFirstChild("StressBar")
-                    local fill = stressBar and (stressBar:FindFirstChild("Fill") or stressBar:FindFirstChild("Bar"))
-                    if fill and fill:IsA("GuiObject") and fill.Size.X.Scale >= 0.35 then
-                        simulateKey("q")
-                    end
-                end
-                task.wait(0.25)
-            end
-        end)
-    end
-end)
+-- Auto Relax removed in compliance with Mobile Zero-Virtual-Input rule
 
 -- ------------------------------------------------------------------------------
 -- [1.3] Pentathlon (Lazy On-Demand Initializer - No Startup Require Trap)
@@ -609,7 +573,6 @@ CatPentathlon:CreateButton("Auto Complete Jegi", "Kicks jegi 6 times without los
     task.spawn(function()
         for i = 1, 6 do
             firePentathlon("JegiKick", { Hit = true, Perfect = true })
-            simulateKey("space")
             task.wait(0.2)
         end
         notify("Pentathlon", "Jegi completed successfully.")
@@ -635,7 +598,7 @@ CatTugOfWar:CreateToggle("Auto Pull", "Continuously triggers pull events", false
     end
 end)
 
-CatTugOfWar:CreateToggle("Anti Miss", "Intercepts QTE prompts to ensure 100% accuracy", false, function(enabled)
+CatTugOfWar:CreateToggle("Anti Miss", "Aligns QTE needle directly with success zone for guaranteed hits", false, function(enabled)
     State.antiMissEnabled = enabled
     if enabled then
         task.spawn(function()
@@ -643,20 +606,14 @@ CatTugOfWar:CreateToggle("Anti Miss", "Intercepts QTE prompts to ensure 100% acc
                 if isCurrentGame("TugOfWar") or isCurrentGame("TugofWar") then
                     local pGui = localPlayer:FindFirstChild("PlayerGui")
                     local towUI = pGui and (pGui:FindFirstChild("TugOfWarUIV2") or pGui:FindFirstChild("TugOfWarUI") or pGui:FindFirstChild("TugofWarRemake"))
-                    if towUI then
-                        local qte = towUI:FindFirstChild("QTE") or towUI:FindFirstChild("QTEFrame")
-                        local btn = qte and (qte:FindFirstChild("Button") or qte:FindFirstChildOfClass("TextButton"))
-                        if btn and btn.Visible then
-                            pcall(function()
-                                if typeof(firesignal) == "function" then
-                                    firesignal(btn.MouseButton1Click)
-                                    firesignal(btn.Activated)
-                                end
-                            end)
-                        end
+                    local circleBase = towUI and (towUI:FindFirstChild("CircleBase", true) or towUI:FindFirstChild("QTEFrame", true))
+                    local arrow = circleBase and circleBase:FindFirstChild("Arrow")
+                    local medium = circleBase and circleBase:FindFirstChild("Medium")
+                    if arrow and medium then
+                        medium.Rotation = arrow.Rotation % 360
                     end
                 end
-                task.wait(0.05)
+                task.wait(0.04)
             end
         end)
     end
@@ -1227,40 +1184,7 @@ CatRebel:CreateToggle("Auto Shoot", "Continuously fires equipped firearm at clos
     end
 end)
 
-local silentAimHooked = false
-
-local function initSilentAimHook()
-    if silentAimHooked then return end
-    silentAimHooked = true
-    if typeof(hookmetamethod) == "function" and typeof(getnamecallmethod) == "function" then
-        local origNamecall
-        origNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
-            local method = getnamecallmethod()
-            local args = { ... }
-
-            if State.silentAimEnabled and tostring(method) == "FireServer" then
-                if self.Name == "FiredGunClient" or self.Name == "ShootRemote" then
-                    local targetHead = getBestEnemyHead()
-                    if targetHead and args[2] and typeof(args[2]) == "table" then
-                        args[2].HitPart = targetHead
-                        args[2].TargetInstance = targetHead
-                        args[2].ClientRayPosition = targetHead.Position
-                        return origNamecall(self, unpack(args))
-                    end
-                end
-            end
-            return origNamecall(self, ...)
-        end))
-    end
-end
-
-CatRebel:CreateToggle("Silent Aim", "Redirects outgoing gunshots to closest enemy head", false, function(enabled)
-    State.silentAimEnabled = enabled
-    if enabled then
-        initSilentAimHook()
-        notify("Silent Aim", "Silent aim hook engaged.")
-    end
-end)
+-- Silent Aim and metatable hooks removed for complete anti-detection stealth
 
 CatRebel:CreateToggle("No Recoil & Spread", "Zeros weapon recoil and bullet spread tables", false, function(enabled)
     State.noRecoilEnabled = enabled
@@ -1432,17 +1356,17 @@ end)
 local CombatTab = Window:CreateTab("Combat", "Crosshair")
 local CatCombatAssist = CombatTab:CreateCategory("Combat Assistance", true, 1)
 
-CatCombatAssist:CreateToggle("CamLock", "Smoothly locks camera rotation onto closest opponent", false, function(enabled)
-    State.camLockEnabled = enabled
+CatCombatAssist:CreateToggle("Aimbot", "Smoothly locks camera rotation onto closest opponent", false, function(enabled)
+    State.aimbotEnabled = enabled
     if enabled then
         task.spawn(function()
-            while State.camLockEnabled do
+            while State.aimbotEnabled do
                 local char = localPlayer.Character
                 local hrp = char and char:FindFirstChild("HumanoidRootPart")
                 local cam = Workspace.CurrentCamera
                 if hrp and cam then
                     local closest = nil
-                    local closestDist = 200
+                    local closestDist = 250
                     for _, p in ipairs(Players:GetPlayers()) do
                         if p ~= localPlayer and p.Character then
                             local pHrp = p.Character:FindFirstChild("HumanoidRootPart")
@@ -1457,9 +1381,18 @@ CatCombatAssist:CreateToggle("CamLock", "Smoothly locks camera rotation onto clo
                         end
                     end
                     if closest and closest.Character then
-                        local pHrp = closest.Character:FindFirstChild("HumanoidRootPart")
-                        if pHrp then
-                            cam.CFrame = CFrame.new(cam.CFrame.Position, pHrp.Position)
+                        local targetPart = nil
+                        if State.aimbotTargetPart == "Torso" then
+                            targetPart = closest.Character:FindFirstChild("UpperTorso")
+                                or closest.Character:FindFirstChild("Torso")
+                                or closest.Character:FindFirstChild("HumanoidRootPart")
+                        else
+                            targetPart = closest.Character:FindFirstChild("Head")
+                                or closest.Character:FindFirstChild("HumanoidRootPart")
+                        end
+                        if targetPart then
+                            local targetCF = CFrame.new(cam.CFrame.Position, targetPart.Position)
+                            cam.CFrame = cam.CFrame:Lerp(targetCF, 0.35)
                         end
                     end
                 end
@@ -1467,6 +1400,10 @@ CatCombatAssist:CreateToggle("CamLock", "Smoothly locks camera rotation onto clo
             end
         end)
     end
+end)
+
+CatCombatAssist:CreateDropdown("Target Part", "Select aimbot target body part", { "Head", "Torso" }, "Head", function(selected)
+    State.aimbotTargetPart = selected
 end)
 
 CatCombatAssist:CreateToggle("Auto QTE Event", "Bypasses quick time events with 100% success", false, function(enabled)
