@@ -24,6 +24,7 @@ local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 local HttpService = game:GetService("HttpService")
 local ProximityPromptService = game:GetService("ProximityPromptService")
@@ -245,6 +246,77 @@ local function setPlayerFrozen(freeze)
             end
         end)
     end
+end
+
+-- [3.5] Crosshair & Smart Aimbot Targeting
+local function getAimCenter()
+    local cam = Workspace.CurrentCamera or camera
+    if not cam then return Vector2.zero end
+    if UserInputService.MouseBehavior == Enum.MouseBehavior.LockCenter then
+        return cam.ViewportSize / 2
+    end
+    local mLoc = UserInputService:GetMouseLocation()
+    if mLoc and (mLoc.X > 0 or mLoc.Y > 0) then
+        return mLoc
+    end
+    return cam.ViewportSize / 2
+end
+
+local function getSmartAimbotTarget(maxFovDistance)
+    maxFovDistance = maxFovDistance or 350
+    local cam = Workspace.CurrentCamera or camera
+    local char = localPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not cam or not hrp then return nil end
+
+    local aimCenter = getAimCenter()
+    local bestTarget = nil
+    local bestFovDist = maxFovDistance
+
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= localPlayer and p.Character then
+            local pChar = p.Character
+            local pHrp = pChar:FindFirstChild("HumanoidRootPart")
+            local pHum = pChar:FindFirstChildOfClass("Humanoid")
+            if pHrp and pHum and pHum.Health > 0 then
+                local targetPart = (State.aimbotTargetPart == "Torso" and (pChar:FindFirstChild("UpperTorso")
+                    or pChar:FindFirstChild("Torso")
+                    or pHrp))
+                    or pChar:FindFirstChild("Head")
+                    or pHrp
+                if targetPart then
+                    local screenPos, onScreen = cam:WorldToViewportPoint(targetPart.Position)
+                    if onScreen and screenPos.Z > 0 then
+                        local distToCenter = (Vector2.new(screenPos.X, screenPos.Y) - aimCenter).Magnitude
+                        if distToCenter < bestFovDist then
+                            bestFovDist = distToCenter
+                            bestTarget = p
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- Fallback: if no target in crosshair FOV, target closest in 3D distance (< 40 studs)
+    if not bestTarget then
+        local closest3dDist = 40
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= localPlayer and p.Character then
+                local pHrp = p.Character:FindFirstChild("HumanoidRootPart")
+                local pHum = p.Character:FindFirstChildOfClass("Humanoid")
+                if pHrp and pHum and pHum.Health > 0 then
+                    local d = (pHrp.Position - hrp.Position).Magnitude
+                    if d < closest3dDist then
+                        closest3dDist = d
+                        bestTarget = p
+                    end
+                end
+            end
+        end
+    end
+
+    return bestTarget
 end
 
 -- ==============================================================================
@@ -1363,33 +1435,15 @@ CatCombatAssist:CreateToggle("Aimbot", "Smoothly locks camera rotation onto clos
             while State.aimbotEnabled do
                 local char = localPlayer.Character
                 local hrp = char and char:FindFirstChild("HumanoidRootPart")
-                local cam = Workspace.CurrentCamera
+                local cam = Workspace.CurrentCamera or camera
                 if hrp and cam then
-                    local closest = nil
-                    local closestDist = 250
-                    for _, p in ipairs(Players:GetPlayers()) do
-                        if p ~= localPlayer and p.Character then
-                            local pHrp = p.Character:FindFirstChild("HumanoidRootPart")
-                            local pHum = p.Character:FindFirstChildOfClass("Humanoid")
-                            if pHrp and pHum and pHum.Health > 0 then
-                                local d = (pHrp.Position - hrp.Position).Magnitude
-                                if d < closestDist then
-                                    closestDist = d
-                                    closest = p
-                                end
-                            end
-                        end
-                    end
-                    if closest and closest.Character then
-                        local targetPart = nil
-                        if State.aimbotTargetPart == "Torso" then
-                            targetPart = closest.Character:FindFirstChild("UpperTorso")
-                                or closest.Character:FindFirstChild("Torso")
-                                or closest.Character:FindFirstChild("HumanoidRootPart")
-                        else
-                            targetPart = closest.Character:FindFirstChild("Head")
-                                or closest.Character:FindFirstChild("HumanoidRootPart")
-                        end
+                    local targetPlayer = getSmartAimbotTarget(350)
+                    if targetPlayer and targetPlayer.Character then
+                        local targetPart = (State.aimbotTargetPart == "Torso" and (targetPlayer.Character:FindFirstChild("UpperTorso")
+                            or targetPlayer.Character:FindFirstChild("Torso")
+                            or targetPlayer.Character:FindFirstChild("HumanoidRootPart")))
+                            or targetPlayer.Character:FindFirstChild("Head")
+                            or targetPlayer.Character:FindFirstChild("HumanoidRootPart")
                         if targetPart then
                             local targetCF = CFrame.new(cam.CFrame.Position, targetPart.Position)
                             cam.CFrame = cam.CFrame:Lerp(targetCF, 0.35)
@@ -1460,50 +1514,535 @@ local UtilitiesTab = Window:CreateTab("Utilities", "Wrench")
 -- ------------------------------------------------------------------------------
 local CatESP = UtilitiesTab:CreateCategory("Player & World ESP", true, 1)
 
-local espHighlights = {}
+local ESPAssets = {
+    -- [Top Billboard: Roles & Health]
+    GuardIcon      = "rbxassetid://131587600310250",
+    ContestantIcon = "rbxassetid://137759333215657",
+    HealthIcon     = "rbxassetid://108046682332370",
 
-local function updatePlayerESP()
+    -- [Bottom Billboard: Powers Below Feet]
+    Quicksilver    = "rbxassetid://72385806835306",
+    LightningGod   = "rbxassetid://122234512153024",
+    UltraInstinct  = "rbxassetid://88301680233730",
+    RealityJumper  = "rbxassetid://124700912851097",
+    GenericPower   = "rbxassetid://96417964275911"
+}
+
+local espInstances = {}
+
+local function isPlayerGuard(player)
+    if not player then return false end
+    if player:GetAttribute("IsGuard") == true then return true end
+    if player.Team and string.find(string.lower(player.Team.Name), "guard") then return true end
+    local char = player.Character
+    if char then
+        if char:FindFirstChild("TypeOfGuard") ~= nil or char:GetAttribute("TypeOfGuard") ~= nil then return true end
+        if char:FindFirstChild("GuardCanKillLockOn") ~= nil or char:FindFirstChild("PlayerCanKill") ~= nil then return true end
+        if string.find(string.lower(char.Name), "guard") then return true end
+        if char:FindFirstChild("Gun") or char:FindFirstChild("Revolver") or char:FindFirstChild("SubmachineGun") then return true end
+    end
+    return false
+end
+
+local function getPlayerPower(player)
+    if not player then return nil end
+    local powerAttributes = { "_EquippedPower", "EquippedPower", "Power", "CurrentPower", "Ability", "EquippedGuardPower" }
+
+    for _, attr in ipairs(powerAttributes) do
+        local val = player:GetAttribute(attr)
+        if val ~= nil and val ~= false and val ~= "" and val ~= 0 and val ~= "None" and val ~= "Yok" then
+            return tostring(val)
+        end
+    end
+
+    local char = player.Character
+    if char then
+        for _, attr in ipairs(powerAttributes) do
+            local val = char:GetAttribute(attr)
+            if val ~= nil and val ~= false and val ~= "" and val ~= 0 and val ~= "None" and val ~= "Yok" then
+                return tostring(val)
+            end
+        end
+
+        for _, desc in ipairs(char:GetDescendants()) do
+            if desc.Name == "_EquippedPower" or desc.Name == "EquippedPower" or desc.Name == "Power" then
+                if (desc:IsA("StringValue") or desc:IsA("NumberValue")) and desc.Value ~= "" and desc.Value ~= "None" and desc.Value ~= "Yok" then
+                    return tostring(desc.Value)
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
+local function resolvePowerInfo(powerName)
+    if not powerName or powerName == "" then return nil end
+    local lower = string.lower(powerName)
+    if lower == "none" or lower == "yok" or lower == "false" or lower == "nil" then
+        return nil
+    end
+
+    if string.find(lower, "quick") or string.find(lower, "silver") or string.find(lower, "speed") then
+        return {
+            name = "Quicksilver",
+            icon = ESPAssets.Quicksilver,
+            color = Color3.fromRGB(0, 235, 255),
+            glowColor = Color3.fromRGB(0, 160, 255)
+        }
+    elseif string.find(lower, "light") or string.find(lower, "god") or string.find(lower, "thunder") or string.find(lower, "volt") then
+        return {
+            name = "Lightning God",
+            icon = ESPAssets.LightningGod,
+            color = Color3.fromRGB(255, 215, 0),
+            glowColor = Color3.fromRGB(255, 160, 0)
+        }
+    elseif string.find(lower, "instinct") or string.find(lower, "ultra") or string.find(lower, "dodge") then
+        return {
+            name = "Ultra Instinct",
+            icon = ESPAssets.UltraInstinct,
+            color = Color3.fromRGB(215, 240, 255),
+            glowColor = Color3.fromRGB(140, 190, 255)
+        }
+    elseif string.find(lower, "reality") or string.find(lower, "jump") or string.find(lower, "teleport") or string.find(lower, "portal") then
+        return {
+            name = "Reality Jumper",
+            icon = ESPAssets.RealityJumper,
+            color = Color3.fromRGB(255, 80, 220),
+            glowColor = Color3.fromRGB(180, 40, 230)
+        }
+    else
+        return {
+            name = powerName,
+            icon = ESPAssets.GenericPower,
+            color = Color3.fromRGB(0, 180, 255),
+            glowColor = Color3.fromRGB(0, 120, 230)
+        }
+    end
+end
+
+local function createOrGetESP(player)
+    local safeContainer = (typeof(gethui) == "function" and gethui()) or game:GetService("CoreGui")
+    local entry = espInstances[player]
+    if entry and entry.topGui and entry.topGui.Parent then
+        return entry
+    end
+
+    -- [Top Billboard: Roles & Ghost Trail Health Bar]
+    local topGui = Instance.new("BillboardGui")
+    topGui.Name = "AdvancedESP_" .. player.Name
+    topGui.Size = UDim2.new(0, 155, 0, 42)
+    topGui.StudsOffset = Vector3.new(0, 3.6, 0)
+    topGui.AlwaysOnTop = true
+    topGui.LightInfluence = 0
+    topGui.MaxDistance = 300
+    topGui.ResetOnSpawn = false
+    topGui.Enabled = false
+
+    local topRoot = Instance.new("Frame")
+    topRoot.Size = UDim2.new(1, 0, 1, 0)
+    topRoot.BackgroundTransparency = 1
+    topRoot.Parent = topGui
+
+    local topList = Instance.new("UIListLayout")
+    topList.SortOrder = Enum.SortOrder.LayoutOrder
+    topList.FillDirection = Enum.FillDirection.Vertical
+    topList.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    topList.Padding = UDim.new(0, 3)
+    topList.Parent = topRoot
+
+    -- Role & Name Row
+    local headerFrame = Instance.new("Frame")
+    headerFrame.Name = "Header"
+    headerFrame.Size = UDim2.new(1, 0, 0, 20)
+    headerFrame.BackgroundColor3 = Color3.fromRGB(15, 20, 32)
+    headerFrame.BackgroundTransparency = 0.25
+    headerFrame.Parent = topRoot
+
+    local headerCorner = Instance.new("UICorner")
+    headerCorner.CornerRadius = UDim.new(0, 5)
+    headerCorner.Parent = headerFrame
+
+    local headerStroke = Instance.new("UIStroke")
+    headerStroke.Thickness = 1
+    headerStroke.Color = Color3.fromRGB(0, 150, 255)
+    headerStroke.Transparency = 0.3
+    headerStroke.Parent = headerFrame
+
+    local roleIcon = Instance.new("ImageLabel")
+    roleIcon.Name = "RoleIcon"
+    roleIcon.Size = UDim2.new(0, 14, 0, 14)
+    roleIcon.Position = UDim2.new(0, 3, 0.5, -7)
+    roleIcon.BackgroundTransparency = 1
+    roleIcon.Image = ESPAssets.ContestantIcon
+    roleIcon.Parent = headerFrame
+
+    local nameLabel = Instance.new("TextLabel")
+    nameLabel.Name = "NameLabel"
+    nameLabel.Position = UDim2.new(0, 20, 0, 0)
+    nameLabel.Size = UDim2.new(1, -22, 1, 0)
+    nameLabel.BackgroundTransparency = 1
+    nameLabel.Font = Enum.Font.GothamBold
+    nameLabel.TextSize = 10
+    nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+    nameLabel.Text = player.DisplayName
+    nameLabel.Parent = headerFrame
+
+    -- Health Bar Row
+    local hpFrame = Instance.new("Frame")
+    hpFrame.Name = "HealthRow"
+    hpFrame.Size = UDim2.new(1, 0, 0, 14)
+    hpFrame.BackgroundColor3 = Color3.fromRGB(12, 14, 22)
+    hpFrame.BackgroundTransparency = 0.35
+    hpFrame.Parent = topRoot
+
+    local hpCorner = Instance.new("UICorner")
+    hpCorner.CornerRadius = UDim.new(0, 4)
+    hpCorner.Parent = hpFrame
+
+    local hpStroke = Instance.new("UIStroke")
+    hpStroke.Thickness = 1
+    hpStroke.Color = Color3.fromRGB(40, 48, 65)
+    hpStroke.Transparency = 0.5
+    hpStroke.Parent = hpFrame
+
+    local hpIcon = Instance.new("ImageLabel")
+    hpIcon.Name = "HPIcon"
+    hpIcon.Size = UDim2.new(0, 11, 0, 11)
+    hpIcon.Position = UDim2.new(0, 3, 0.5, -5)
+    hpIcon.BackgroundTransparency = 1
+    hpIcon.Image = ESPAssets.HealthIcon
+    hpIcon.Parent = hpFrame
+
+    local barTrack = Instance.new("Frame")
+    barTrack.Name = "BarTrack"
+    barTrack.Position = UDim2.new(0, 17, 0.5, -3)
+    barTrack.Size = UDim2.new(1, -21, 0, 6)
+    barTrack.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    barTrack.BackgroundTransparency = 0.7
+    barTrack.ClipsDescendants = true
+    barTrack.Parent = hpFrame
+
+    local barCorner = Instance.new("UICorner")
+    barCorner.CornerRadius = UDim.new(1, 0)
+    barCorner.Parent = barTrack
+
+    -- Ghost Trail Bar (Damage Flash)
+    local trailBar = Instance.new("Frame")
+    trailBar.Name = "TrailBar"
+    trailBar.Position = UDim2.new(0, 0, 0, 0)
+    trailBar.Size = UDim2.new(1, 0, 1, 0)
+    trailBar.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    trailBar.BackgroundTransparency = 0.25
+    trailBar.BorderSizePixel = 0
+    trailBar.Parent = barTrack
+
+    local trailCorner = Instance.new("UICorner")
+    trailCorner.CornerRadius = UDim.new(1, 0)
+    trailCorner.Parent = trailBar
+
+    -- Fill Bar (Dynamic Color)
+    local fillBar = Instance.new("Frame")
+    fillBar.Name = "FillBar"
+    fillBar.Position = UDim2.new(0, 0, 0, 0)
+    fillBar.Size = UDim2.new(1, 0, 1, 0)
+    fillBar.BackgroundColor3 = Color3.fromRGB(0, 255, 140)
+    fillBar.BorderSizePixel = 0
+    fillBar.Parent = barTrack
+
+    local fillCorner = Instance.new("UICorner")
+    fillCorner.CornerRadius = UDim.new(1, 0)
+    fillCorner.Parent = fillBar
+
+    topGui.Parent = safeContainer
+
+    -- [Bottom Billboard: Powers Below Feet]
+    local bottomGui = Instance.new("BillboardGui")
+    bottomGui.Name = "PowerESP_" .. player.Name
+    bottomGui.Size = UDim2.new(0, 135, 0, 22)
+    bottomGui.StudsOffset = Vector3.new(0, -3.2, 0)
+    bottomGui.AlwaysOnTop = true
+    bottomGui.LightInfluence = 0
+    bottomGui.MaxDistance = 200
+    bottomGui.ResetOnSpawn = false
+    bottomGui.Enabled = false
+
+    local capsule = Instance.new("Frame")
+    capsule.Name = "Capsule"
+    capsule.Size = UDim2.new(1, 0, 1, 0)
+    capsule.BackgroundColor3 = Color3.fromRGB(15, 18, 28)
+    capsule.BackgroundTransparency = 0.2
+    capsule.Parent = bottomGui
+
+    local capCorner = Instance.new("UICorner")
+    capCorner.CornerRadius = UDim.new(1, 0)
+    capCorner.Parent = capsule
+
+    local capStroke = Instance.new("UIStroke")
+    capStroke.Thickness = 1.2
+    capStroke.Transparency = 0.2
+    capStroke.Color = Color3.fromRGB(0, 160, 255)
+    capStroke.Parent = capsule
+
+    local pIcon = Instance.new("ImageLabel")
+    pIcon.Name = "PowerIcon"
+    pIcon.Size = UDim2.new(0, 14, 0, 14)
+    pIcon.Position = UDim2.new(0, 5, 0.5, -7)
+    pIcon.BackgroundTransparency = 1
+    pIcon.Image = ESPAssets.GenericPower
+    pIcon.Parent = capsule
+
+    local pLabel = Instance.new("TextLabel")
+    pLabel.Name = "PowerText"
+    pLabel.Position = UDim2.new(0, 22, 0, 0)
+    pLabel.Size = UDim2.new(1, -26, 1, 0)
+    pLabel.BackgroundTransparency = 1
+    pLabel.Font = Enum.Font.GothamBold
+    pLabel.TextSize = 10
+    pLabel.TextColor3 = Color3.fromRGB(0, 200, 255)
+    pLabel.TextXAlignment = Enum.TextXAlignment.Center
+    pLabel.Text = "Power"
+    pLabel.Parent = capsule
+
+    bottomGui.Parent = safeContainer
+
+    -- Silhouette Highlight
+    local hl = Instance.new("Highlight")
+    hl.Name = "InkPlayerHL_" .. player.Name
+    hl.FillTransparency = 0.55
+    hl.OutlineTransparency = 0.15
+    hl.OutlineColor = Color3.fromRGB(255, 255, 255)
+    hl.Parent = safeContainer
+
+    local playerEntry = {
+        topGui = topGui,
+        bottomGui = bottomGui,
+        hl = hl,
+        headerFrame = headerFrame,
+        headerStroke = headerStroke,
+        roleIcon = roleIcon,
+        nameLabel = nameLabel,
+        fillBar = fillBar,
+        trailBar = trailBar,
+        capsule = capsule,
+        capStroke = capStroke,
+        pIcon = pIcon,
+        pLabel = pLabel
+    }
+
+    espInstances[player] = playerEntry
+    return playerEntry
+end
+
+local function updatePlayerHealthDisplay(entry, hum)
+    if not entry or not hum then return end
+    local maxHealth = (hum.MaxHealth and hum.MaxHealth > 0) and hum.MaxHealth or 100
+    local health = math.clamp(hum.Health, 0, maxHealth)
+    local pct = math.clamp(health / maxHealth, 0, 1)
+
+    -- Dynamic Color Shift
+    local barColor = Color3.fromRGB(0, 255, 140)
+    if pct <= 0.25 then
+        barColor = Color3.fromRGB(255, 40, 40)
+    elseif pct <= 0.6 then
+        barColor = Color3.fromRGB(255, 190, 0)
+    end
+    entry.fillBar.BackgroundColor3 = barColor
+
+    -- Fast tween for active fill
+    TweenService:Create(entry.fillBar, TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+        Size = UDim2.new(pct, 0, 1, 0)
+    }):Play()
+
+    -- Slower sine tween for ghost damage trail
+    TweenService:Create(entry.trailBar, TweenInfo.new(0.6, Enum.EasingStyle.Sine, Enum.EasingDirection.Out), {
+        Size = UDim2.new(pct, 0, 1, 0)
+    }):Play()
+end
+
+local lastESPRefresh = 0
+local function refreshESP()
+    local now = tick()
+    if now - lastESPRefresh < 0.08 then return end
+    lastESPRefresh = now
+
+    local cam = Workspace.CurrentCamera or camera
+    local char = localPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not cam or not hrp then
+        for _, entry in pairs(espInstances) do
+            if entry.topGui then entry.topGui.Enabled = false end
+            if entry.bottomGui then entry.bottomGui.Enabled = false end
+            if entry.hl then entry.hl.Enabled = false end
+        end
+        return
+    end
+
+    local localPos = hrp.Position
+    local candidates = {}
+
     for _, p in ipairs(Players:GetPlayers()) do
         if p ~= localPlayer and p.Character then
-            local char = p.Character
-            local hum = char:FindFirstChildOfClass("Humanoid")
-            if hum and hum.Health > 0 and State.playerEspEnabled then
-                if not espHighlights[p] then
-                    local hl = Instance.new("Highlight")
-                    hl.Name = "InkPlayerHL"
-                    hl.Adornee = char
-                    hl.FillColor = p.TeamColor and p.TeamColor.Color or Color3.fromRGB(0, 160, 255)
-                    hl.OutlineColor = Color3.fromRGB(255, 255, 255)
-                    hl.FillTransparency = 0.5
-                    hl.OutlineTransparency = 0.1
-                    hl.Parent = (typeof(gethui) == "function" and gethui()) or game:GetService("CoreGui")
-                    espHighlights[p] = hl
+            local pHrp = p.Character:FindFirstChild("HumanoidRootPart")
+            local pHum = p.Character:FindFirstChildOfClass("Humanoid")
+            if pHrp and pHum and pHum.Health > 0 then
+                local dist = math.floor((pHrp.Position - localPos).Magnitude)
+                if dist <= 300 then
+                    table.insert(candidates, { player = p, hrp = pHrp, hum = pHum, dist = dist })
                 end
-            elseif espHighlights[p] then
-                espHighlights[p]:Destroy()
-                espHighlights[p] = nil
             end
-        elseif espHighlights[p] then
-            espHighlights[p]:Destroy()
-            espHighlights[p] = nil
+        end
+    end
+
+    table.sort(candidates, function(a, b) return a.dist < b.dist end)
+
+    local activeSet = {}
+    local renderLimit = math.min(#candidates, 25)
+
+    for i = 1, renderLimit do
+        local item = candidates[i]
+        local p = item.player
+        activeSet[p] = true
+
+        local entry = createOrGetESP(p)
+        entry.topGui.Adornee = item.hrp
+        entry.bottomGui.Adornee = item.hrp
+
+        -- Top Billboard (Role Header & Ghost Health Bar)
+        if State.playerEspEnabled then
+            local isGuard = isPlayerGuard(p)
+            if isGuard then
+                entry.headerFrame.BackgroundColor3 = Color3.fromRGB(35, 10, 15)
+                entry.headerStroke.Color = Color3.fromRGB(255, 45, 65)
+                entry.roleIcon.Image = ESPAssets.GuardIcon
+                entry.nameLabel.Text = "🔺 GUARD 🔺 [" .. item.dist .. "m]"
+                entry.nameLabel.TextColor3 = Color3.fromRGB(255, 75, 95)
+                if entry.hl then
+                    entry.hl.Adornee = p.Character
+                    entry.hl.FillColor = Color3.fromRGB(255, 30, 50)
+                    entry.hl.Enabled = true
+                end
+            else
+                entry.headerFrame.BackgroundColor3 = Color3.fromRGB(15, 20, 32)
+                entry.headerStroke.Color = Color3.fromRGB(0, 150, 255)
+                entry.roleIcon.Image = ESPAssets.ContestantIcon
+                entry.nameLabel.Text = p.DisplayName .. " [" .. item.dist .. "m]"
+                entry.nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+                if entry.hl then
+                    entry.hl.Adornee = p.Character
+                    entry.hl.FillColor = p.TeamColor and p.TeamColor.Color or Color3.fromRGB(0, 160, 255)
+                    entry.hl.Enabled = true
+                end
+            end
+            updatePlayerHealthDisplay(entry, item.hum)
+            entry.topGui.Enabled = true
+        else
+            entry.topGui.Enabled = false
+            if entry.hl then entry.hl.Enabled = false end
+        end
+
+        -- Bottom Billboard (Power Ability Pill Capsule)
+        if State.espPowersEnabled then
+            local rawPower = getPlayerPower(p)
+            local pInfo = resolvePowerInfo(rawPower)
+            if pInfo then
+                entry.pIcon.Image = pInfo.icon
+                entry.pLabel.Text = pInfo.name
+                entry.pLabel.TextColor3 = pInfo.color
+                entry.capStroke.Color = pInfo.glowColor
+                entry.bottomGui.Enabled = true
+            else
+                entry.bottomGui.Enabled = false
+            end
+        else
+            entry.bottomGui.Enabled = false
+        end
+    end
+
+    -- Disable billboard and highlight for all players beyond top 25 or out of range
+    for p, entry in pairs(espInstances) do
+        if not activeSet[p] then
+            if entry.topGui then entry.topGui.Enabled = false end
+            if entry.bottomGui then entry.bottomGui.Enabled = false end
+            if entry.hl then entry.hl.Enabled = false end
         end
     end
 end
 
-CatESP:CreateToggle("Player ESP", "Outlines players and displays team/health info", false, function(enabled)
+local function hookPlayerSignals(player)
+    local function onCharAdded(char)
+        local hum = char:WaitForChild("Humanoid", 5)
+        if hum then
+            table.insert(Connections, hum.HealthChanged:Connect(function()
+                if State.playerEspEnabled and espInstances[player] then
+                    updatePlayerHealthDisplay(espInstances[player], hum)
+                end
+            end))
+        end
+    end
+
+    if player.Character then
+        task.spawn(onCharAdded, player.Character)
+    end
+    table.insert(Connections, player.CharacterAdded:Connect(onCharAdded))
+end
+
+for _, p in ipairs(Players:GetPlayers()) do
+    if p ~= localPlayer then
+        hookPlayerSignals(p)
+    end
+end
+
+table.insert(Connections, Players.PlayerAdded:Connect(function(p)
+    if p ~= localPlayer then
+        hookPlayerSignals(p)
+    end
+end))
+
+table.insert(Connections, Players.PlayerRemoving:Connect(function(p)
+    local entry = espInstances[p]
+    if entry then
+        if entry.topGui then entry.topGui:Destroy() end
+        if entry.bottomGui then entry.bottomGui:Destroy() end
+        if entry.hl then entry.hl:Destroy() end
+        espInstances[p] = nil
+    end
+end))
+
+local espRenderConn = nil
+local function startESPThread()
+    if not espRenderConn then
+        espRenderConn = RunService.RenderStepped:Connect(function()
+            if State.playerEspEnabled or State.espPowersEnabled then
+                refreshESP()
+            end
+        end)
+        table.insert(Connections, espRenderConn)
+    end
+end
+
+CatESP:CreateToggle("Player ESP", "Displays role badge, distance, contestant tag & ghost health bar", false, function(enabled)
     State.playerEspEnabled = enabled
     if enabled then
-        table.insert(Connections, RunService.RenderStepped:Connect(function()
-            if State.playerEspEnabled then updatePlayerESP() end
-        end))
+        startESPThread()
     else
-        for _, hl in pairs(espHighlights) do if hl then hl:Destroy() end end
-        table.clear(espHighlights)
+        for _, entry in pairs(espInstances) do
+            if entry.topGui then entry.topGui.Enabled = false end
+            if entry.hl then entry.hl.Enabled = false end
+        end
     end
 end)
 
-CatESP:CreateToggle("ESP Powers", "Displays equipped power billboard text above players", false, function(enabled)
+CatESP:CreateToggle("ESP Powers", "Displays equipped power ability pill capsule below players", false, function(enabled)
     State.espPowersEnabled = enabled
+    if enabled then
+        startESPThread()
+    else
+        for _, entry in pairs(espInstances) do
+            if entry.bottomGui then entry.bottomGui.Enabled = false end
+        end
+    end
 end)
 
 -- ------------------------------------------------------------------------------
