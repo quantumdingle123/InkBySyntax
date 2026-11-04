@@ -325,7 +325,7 @@ end
 local disguisedGuiName = HttpService:GenerateGUID(false)
 
 local Window = SyntaxisLib:CreateWindow({
-    Title = "InkBySyntax",
+    Title = "Syntaxis",
     GuiName = disguisedGuiName,
     Theme = State.themeName,
     State = State,
@@ -2227,4 +2227,4 @@ local SettingsTab = Window:CreateSettingsTab("Settings", "Settings", {
 
 -- 5. FINALIZE & INITIALIZE WINDOW
 Window:Initialize()
-notify("InkBySyntax", "InkBySyntax loaded securely! Press orb to toggle.", 5)
+notify("Syntaxis", "Syntaxis loaded securely! Press orb to toggle.", 5)
