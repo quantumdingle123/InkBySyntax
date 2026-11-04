@@ -455,44 +455,33 @@ CatHideSeek:CreateToggle({
 -- ==============================================================================
 -- [SECTION 3: VISUALS, ESP & CAMERAS]
 -- ==============================================================================
+-- ------------------------------------------------------------------------------
+-- [4.1] Player & World ESP
+-- ------------------------------------------------------------------------------
 local CatESP = UtilitiesTab:CreateCategory("Player & World ESP", true, 1)
 
 local ESPAssets = {
     -- [Top Billboard: Roles & Health]
-    GuardIcon      = "rbxthumb://type=Asset&id=131587600310250&w=150&h=150",
-    ContestantIcon = "rbxthumb://type=Asset&id=137759333215657&w=150&h=150",
-    HealthIcon     = "rbxthumb://type=Asset&id=108046682332370&w=150&h=150",
-    HunterSkull    = "rbxthumb://type=Asset&id=102795198809416&w=150&h=150",
+    GuardIcon      = "rbxassetid://131587600310250",
+    ContestantIcon = "rbxassetid://137759333215657",
+    HealthIcon     = "rbxassetid://108046682332370",
+    HunterSkull    = "rbxassetid://102795198809416",
 
     -- [Bottom Billboard: Powers Below Feet]
-    Quicksilver    = "rbxthumb://type=Asset&id=72385806835306&w=150&h=150",
-    LightningGod   = "rbxthumb://type=Asset&id=122234512153024&w=150&h=150",
-    UltraInstinct  = "rbxthumb://type=Asset&id=88301680233730&w=150&h=150",
-    RealityJumper  = "rbxthumb://type=Asset&id=124700912851097&w=150&h=150",
-    GenericPower   = "rbxthumb://type=Asset&id=96417964275911&w=150&h=150",
+    Quicksilver    = "rbxassetid://72385806835306",
+    LightningGod   = "rbxassetid://122234512153024",
+    UltraInstinct  = "rbxassetid://88301680233730",
+    RealityJumper  = "rbxassetid://124700912851097",
+    GenericPower   = "rbxassetid://96417964275911",
 
     -- [World & Objective ESPs]
-    KeyCircle      = "rbxthumb://type=Asset&id=95806911911936&w=150&h=150",
-    KeySquare      = "rbxthumb://type=Asset&id=95559838815688&w=150&h=150",
-    KeyTriangle    = "rbxthumb://type=Asset&id=80252271461193&w=150&h=150",
-    ExitDoor       = "rbxthumb://type=Asset&id=79579569551802&w=150&h=150",
-    DroppedWeapon  = "rbxthumb://type=Asset&id=78800591689768&w=150&h=150",
-    DroppedBandage = "rbxthumb://type=Asset&id=109209140242630&w=150&h=150"
+    KeyCircle      = "rbxassetid://95806911911936",
+    KeySquare      = "rbxassetid://95559838815688",
+    KeyTriangle    = "rbxassetid://80252271461193",
+    ExitDoor       = "rbxassetid://79579569551802",
+    DroppedWeapon  = "rbxassetid://78800591689768",
+    DroppedBandage = "rbxassetid://109209140242630"
 }
-
--- Async texture warmup
-task.spawn(function()
-    pcall(function()
-        local ContentProvider = game:GetService("ContentProvider")
-        local preloadBatch = {}
-        for _, uri in pairs(ESPAssets) do
-            local img = Instance.new("ImageLabel")
-            img.Image = uri
-            table.insert(preloadBatch, img)
-        end
-        ContentProvider:PreloadAsync(preloadBatch)
-    end)
-end)
 
 local espInstances = {}
 local objectEspInstances = {}
@@ -595,10 +584,10 @@ local function createOrGetESP(player)
         return entry
     end
 
-    -- [Top Billboard: Clean Centered White Text & Floating Ghost Trail Health Bar]
+    -- [Top Billboard: Roles & Ghost Trail Health Bar]
     local topGui = Instance.new("BillboardGui")
     topGui.Name = "AdvancedESP_" .. player.Name
-    topGui.Size = UDim2.new(0, 160, 0, 32)
+    topGui.Size = UDim2.new(0, 155, 0, 42)
     topGui.StudsOffset = Vector3.new(0, 3.6, 0)
     topGui.AlwaysOnTop = true
     topGui.LightInfluence = 0
@@ -615,68 +604,81 @@ local function createOrGetESP(player)
     topList.SortOrder = Enum.SortOrder.LayoutOrder
     topList.FillDirection = Enum.FillDirection.Vertical
     topList.HorizontalAlignment = Enum.HorizontalAlignment.Center
-    topList.Padding = UDim.new(0, 2)
+    topList.Padding = UDim.new(0, 3)
     topList.Parent = topRoot
 
-    -- Clean Name Text Row (Zero Background Box, Pure Centered White Text with Crisp Outline)
+    -- Role & Name Row
     local headerFrame = Instance.new("Frame")
     headerFrame.Name = "Header"
-    headerFrame.Size = UDim2.new(1, 0, 0, 16)
-    headerFrame.BackgroundTransparency = 1
-    headerFrame.BorderSizePixel = 0
+    headerFrame.Size = UDim2.new(1, 0, 0, 20)
+    headerFrame.BackgroundColor3 = Color3.fromRGB(15, 20, 32)
+    headerFrame.BackgroundTransparency = 0.25
     headerFrame.Parent = topRoot
+
+    local headerCorner = Instance.new("UICorner")
+    headerCorner.CornerRadius = UDim.new(0, 5)
+    headerCorner.Parent = headerFrame
+
+    local headerStroke = Instance.new("UIStroke")
+    headerStroke.Thickness = 1
+    headerStroke.Color = Color3.fromRGB(0, 150, 255)
+    headerStroke.Transparency = 0.3
+    headerStroke.Parent = headerFrame
 
     local roleIcon = Instance.new("ImageLabel")
     roleIcon.Name = "RoleIcon"
     roleIcon.Size = UDim2.new(0, 14, 0, 14)
-    roleIcon.Position = UDim2.new(0, 0, 0, 0)
+    roleIcon.Position = UDim2.new(0, 3, 0.5, -7)
     roleIcon.BackgroundTransparency = 1
-    roleIcon.Visible = false
+    roleIcon.Image = ESPAssets.ContestantIcon
     roleIcon.Parent = headerFrame
 
     local nameLabel = Instance.new("TextLabel")
     nameLabel.Name = "NameLabel"
-    nameLabel.Position = UDim2.new(0, 0, 0, 0)
-    nameLabel.Size = UDim2.new(1, 0, 1, 0)
+    nameLabel.Position = UDim2.new(0, 20, 0, 0)
+    nameLabel.Size = UDim2.new(1, -22, 1, 0)
     nameLabel.BackgroundTransparency = 1
     nameLabel.Font = Enum.Font.GothamBold
-    nameLabel.TextSize = 11
+    nameLabel.TextSize = 10
     nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-    nameLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-    nameLabel.TextStrokeTransparency = 0.25
-    nameLabel.TextXAlignment = Enum.TextXAlignment.Center
+    nameLabel.TextXAlignment = Enum.TextXAlignment.Left
     nameLabel.Text = player.DisplayName
     nameLabel.Parent = headerFrame
 
-    -- Floating Health Bar Row (Zero Container Card)
+    -- Health Bar Row
     local hpFrame = Instance.new("Frame")
     hpFrame.Name = "HealthRow"
-    hpFrame.Size = UDim2.new(1, 0, 0, 8)
-    hpFrame.BackgroundTransparency = 1
-    hpFrame.BorderSizePixel = 0
+    hpFrame.Size = UDim2.new(1, 0, 0, 14)
+    hpFrame.BackgroundColor3 = Color3.fromRGB(12, 14, 22)
+    hpFrame.BackgroundTransparency = 0.35
     hpFrame.Parent = topRoot
+
+    local hpCorner = Instance.new("UICorner")
+    hpCorner.CornerRadius = UDim.new(0, 4)
+    hpCorner.Parent = hpFrame
+
+    local hpStroke = Instance.new("UIStroke")
+    hpStroke.Thickness = 1
+    hpStroke.Color = Color3.fromRGB(40, 48, 65)
+    hpStroke.Transparency = 0.5
+    hpStroke.Parent = hpFrame
 
     local hpIcon = Instance.new("ImageLabel")
     hpIcon.Name = "HPIcon"
     hpIcon.Size = UDim2.new(0, 11, 0, 11)
+    hpIcon.Position = UDim2.new(0, 3, 0.5, -5)
     hpIcon.BackgroundTransparency = 1
-    hpIcon.Visible = false
+    hpIcon.Image = ESPAssets.HealthIcon
     hpIcon.Parent = hpFrame
 
     local barTrack = Instance.new("Frame")
     barTrack.Name = "BarTrack"
-    barTrack.Position = UDim2.new(0.5, -45, 0.5, -3)
-    barTrack.Size = UDim2.new(0, 90, 0, 6)
+    barTrack.Position = UDim2.new(0, 17, 0.5, -3)
+    barTrack.Size = UDim2.new(1, -21, 0, 6)
     barTrack.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-    barTrack.BackgroundTransparency = 0.5
+    barTrack.BackgroundTransparency = 0.7
     barTrack.ClipsDescendants = true
     barTrack.Parent = hpFrame
-
-    local barTrackStroke = Instance.new("UIStroke")
-    barTrackStroke.Thickness = 1
-    barTrackStroke.Color = Color3.fromRGB(0, 0, 0)
-    barTrackStroke.Transparency = 0.4
-    barTrackStroke.Parent = barTrack
 
     local barCorner = Instance.new("UICorner")
     barCorner.CornerRadius = UDim.new(1, 0)
@@ -711,10 +713,10 @@ local function createOrGetESP(player)
 
     topGui.Parent = safeContainer
 
-    -- [Bottom Billboard: Pure Floating Power Icon Below Feet (No Pill, No Box, No Text)]
+    -- [Bottom Billboard: Powers Below Feet]
     local bottomGui = Instance.new("BillboardGui")
     bottomGui.Name = "PowerESP_" .. player.Name
-    bottomGui.Size = UDim2.new(0, 28, 0, 28)
+    bottomGui.Size = UDim2.new(0, 135, 0, 22)
     bottomGui.StudsOffset = Vector3.new(0, -3.2, 0)
     bottomGui.AlwaysOnTop = true
     bottomGui.LightInfluence = 0
@@ -725,24 +727,38 @@ local function createOrGetESP(player)
     local capsule = Instance.new("Frame")
     capsule.Name = "Capsule"
     capsule.Size = UDim2.new(1, 0, 1, 0)
-    capsule.BackgroundTransparency = 1
-    capsule.BorderSizePixel = 0
+    capsule.BackgroundColor3 = Color3.fromRGB(15, 18, 28)
+    capsule.BackgroundTransparency = 0.2
     capsule.Parent = bottomGui
+
+    local capCorner = Instance.new("UICorner")
+    capCorner.CornerRadius = UDim.new(1, 0)
+    capCorner.Parent = capsule
+
+    local capStroke = Instance.new("UIStroke")
+    capStroke.Thickness = 1.2
+    capStroke.Transparency = 0.2
+    capStroke.Color = Color3.fromRGB(0, 160, 255)
+    capStroke.Parent = capsule
 
     local pIcon = Instance.new("ImageLabel")
     pIcon.Name = "PowerIcon"
-    pIcon.Size = UDim2.new(1, 0, 1, 0)
-    pIcon.Position = UDim2.new(0, 0, 0, 0)
+    pIcon.Size = UDim2.new(0, 14, 0, 14)
+    pIcon.Position = UDim2.new(0, 5, 0.5, -7)
     pIcon.BackgroundTransparency = 1
-    pIcon.ScaleType = Enum.ScaleType.Fit
     pIcon.Image = ESPAssets.GenericPower
     pIcon.Parent = capsule
 
     local pLabel = Instance.new("TextLabel")
     pLabel.Name = "PowerText"
-    pLabel.Size = UDim2.new(0, 0, 0, 0)
+    pLabel.Position = UDim2.new(0, 22, 0, 0)
+    pLabel.Size = UDim2.new(1, -26, 1, 0)
     pLabel.BackgroundTransparency = 1
-    pLabel.Visible = false
+    pLabel.Font = Enum.Font.GothamBold
+    pLabel.TextSize = 10
+    pLabel.TextColor3 = Color3.fromRGB(0, 200, 255)
+    pLabel.TextXAlignment = Enum.TextXAlignment.Center
+    pLabel.Text = "Power"
     pLabel.Parent = capsule
 
     bottomGui.Parent = safeContainer
@@ -760,11 +776,13 @@ local function createOrGetESP(player)
         bottomGui = bottomGui,
         hl = hl,
         headerFrame = headerFrame,
+        headerStroke = headerStroke,
         roleIcon = roleIcon,
         nameLabel = nameLabel,
         fillBar = fillBar,
         trailBar = trailBar,
         capsule = capsule,
+        capStroke = capStroke,
         pIcon = pIcon,
         pLabel = pLabel
     }
@@ -840,21 +858,20 @@ local function createOrGetObjectESP(instance, config)
     local icon = Instance.new("ImageLabel")
     icon.Name = "Icon"
     icon.Size = UDim2.new(0, 14, 0, 14)
-    icon.Position = UDim2.new(0, 6, 0.5, -7)
+    icon.Position = UDim2.new(0, 5, 0.5, -7)
     icon.BackgroundTransparency = 1
-    icon.ScaleType = Enum.ScaleType.Fit
     icon.Image = config.icon or ""
     icon.Parent = capsule
 
     local label = Instance.new("TextLabel")
     label.Name = "Label"
-    label.Position = UDim2.new(0, 24, 0, 0)
-    label.Size = UDim2.new(1, -28, 1, 0)
+    label.Position = UDim2.new(0, 22, 0, 0)
+    label.Size = UDim2.new(1, -26, 1, 0)
     label.BackgroundTransparency = 1
     label.Font = Enum.Font.GothamBold
     label.TextSize = 10
     label.TextColor3 = config.textColor or Color3.fromRGB(255, 255, 255)
-    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.TextXAlignment = Enum.TextXAlignment.Center
     label.Text = config.text or instance.Name
     label.Parent = capsule
 
@@ -1094,31 +1111,39 @@ local function refreshESP()
         entry.topGui.Adornee = item.hrp
         entry.bottomGui.Adornee = item.hrp
 
-        -- Top Billboard (Pure Centered White Text & Floating Ghost Health Bar)
+        -- Top Billboard (Role Header & Ghost Health Bar)
         if State.playerEspEnabled then
             local isHunter = p:GetAttribute("IsHunter") == true
             local isGuard = isPlayerGuard(p)
 
-            entry.nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-            entry.nameLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-            entry.nameLabel.TextStrokeTransparency = 0.25
-
             if isHunter then
-                entry.nameLabel.Text = "[HUNTER] " .. p.DisplayName .. " [" .. item.dist .. "m]"
+                entry.headerFrame.BackgroundColor3 = Color3.fromRGB(40, 5, 10)
+                entry.headerStroke.Color = Color3.fromRGB(255, 30, 40)
+                entry.roleIcon.Image = ESPAssets.HunterSkull
+                entry.nameLabel.Text = "💀 HUNTER 💀 [" .. item.dist .. "m]"
+                entry.nameLabel.TextColor3 = Color3.fromRGB(255, 60, 70)
                 if entry.hl then
                     entry.hl.Adornee = p.Character
                     entry.hl.FillColor = Color3.fromRGB(255, 20, 30)
                     entry.hl.Enabled = true
                 end
             elseif isGuard then
-                entry.nameLabel.Text = "[GUARD] " .. p.DisplayName .. " [" .. item.dist .. "m]"
+                entry.headerFrame.BackgroundColor3 = Color3.fromRGB(35, 10, 15)
+                entry.headerStroke.Color = Color3.fromRGB(255, 45, 65)
+                entry.roleIcon.Image = ESPAssets.GuardIcon
+                entry.nameLabel.Text = "🔺 GUARD 🔺 [" .. item.dist .. "m]"
+                entry.nameLabel.TextColor3 = Color3.fromRGB(255, 75, 95)
                 if entry.hl then
                     entry.hl.Adornee = p.Character
                     entry.hl.FillColor = Color3.fromRGB(255, 30, 50)
                     entry.hl.Enabled = true
                 end
             else
+                entry.headerFrame.BackgroundColor3 = Color3.fromRGB(15, 20, 32)
+                entry.headerStroke.Color = Color3.fromRGB(0, 150, 255)
+                entry.roleIcon.Image = ESPAssets.ContestantIcon
                 entry.nameLabel.Text = p.DisplayName .. " [" .. item.dist .. "m]"
+                entry.nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
                 if entry.hl then
                     entry.hl.Adornee = p.Character
                     entry.hl.FillColor = p.TeamColor and p.TeamColor.Color or Color3.fromRGB(0, 160, 255)
@@ -1132,12 +1157,15 @@ local function refreshESP()
             if entry.hl then entry.hl.Enabled = false end
         end
 
-        -- Bottom Billboard (Pure Floating Power Icon Below Feet)
+        -- Bottom Billboard (Power Ability Pill Capsule)
         if State.espPowersEnabled then
             local rawPower = getPlayerPower(p)
             local pInfo = resolvePowerInfo(rawPower)
             if pInfo then
                 entry.pIcon.Image = pInfo.icon
+                entry.pLabel.Text = pInfo.name
+                entry.pLabel.TextColor3 = pInfo.color
+                entry.capStroke.Color = pInfo.glowColor
                 entry.bottomGui.Enabled = true
             else
                 entry.bottomGui.Enabled = false
