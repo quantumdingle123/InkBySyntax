@@ -93,6 +93,9 @@ local State = {
     instantBoxMachineEnabled = false,
     playerEspEnabled = false,
     espPowersEnabled = false,
+    espKeysEnabled = false,
+    espExitDoorsEnabled = false,
+    espItemsEnabled = false,
     antiPushEnabled = false,
     antiAfkEnabled = false,
     infiniteJumpEnabled = false,
@@ -1519,16 +1522,26 @@ local ESPAssets = {
     GuardIcon      = "rbxassetid://131587600310250",
     ContestantIcon = "rbxassetid://137759333215657",
     HealthIcon     = "rbxassetid://108046682332370",
+    HunterSkull    = "rbxassetid://102795198809416",
 
     -- [Bottom Billboard: Powers Below Feet]
     Quicksilver    = "rbxassetid://72385806835306",
     LightningGod   = "rbxassetid://122234512153024",
     UltraInstinct  = "rbxassetid://88301680233730",
     RealityJumper  = "rbxassetid://124700912851097",
-    GenericPower   = "rbxassetid://96417964275911"
+    GenericPower   = "rbxassetid://96417964275911",
+
+    -- [World & Objective ESPs]
+    KeyCircle      = "rbxassetid://95806911911936",
+    KeySquare      = "rbxassetid://95559838815688",
+    KeyTriangle    = "rbxassetid://80252271461193",
+    ExitDoor       = "rbxassetid://79579569551802",
+    DroppedWeapon  = "rbxassetid://78800591689768",
+    DroppedBandage = "rbxassetid://109209140242630"
 }
 
 local espInstances = {}
+local objectEspInstances = {}
 
 local function isPlayerGuard(player)
     if not player then return false end
@@ -1861,6 +1874,250 @@ local function updatePlayerHealthDisplay(entry, hum)
     }):Play()
 end
 
+-- ------------------------------------------------------------------------------
+-- World Object ESP Helper (Keys, Exit Doors, Weapons, Bandages)
+-- ------------------------------------------------------------------------------
+local function createOrGetObjectESP(instance, config)
+    local safeContainer = (typeof(gethui) == "function" and gethui()) or game:GetService("CoreGui")
+    local entry = objectEspInstances[instance]
+    if entry and entry.gui and entry.gui.Parent then
+        return entry
+    end
+
+    local gui = Instance.new("BillboardGui")
+    gui.Name = "ObjESP_" .. instance.Name
+    gui.Size = UDim2.new(0, config.width or 140, 0, 22)
+    gui.StudsOffset = Vector3.new(0, config.offsetY or 1.5, 0)
+    gui.AlwaysOnTop = true
+    gui.LightInfluence = 0
+    gui.MaxDistance = 350
+    gui.ResetOnSpawn = false
+    gui.Enabled = false
+    gui.Adornee = instance:IsA("Model") and (instance.PrimaryPart or instance:FindFirstChildWhichIsA("BasePart")) or instance
+
+    local capsule = Instance.new("Frame")
+    capsule.Name = "Capsule"
+    capsule.Size = UDim2.new(1, 0, 1, 0)
+    capsule.BackgroundColor3 = config.bgColor or Color3.fromRGB(15, 18, 28)
+    capsule.BackgroundTransparency = 0.2
+    capsule.Parent = gui
+
+    local capCorner = Instance.new("UICorner")
+    capCorner.CornerRadius = UDim.new(1, 0)
+    capCorner.Parent = capsule
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Thickness = 1.2
+    stroke.Transparency = 0.2
+    stroke.Color = config.strokeColor or Color3.fromRGB(255, 215, 0)
+    stroke.Parent = capsule
+
+    local icon = Instance.new("ImageLabel")
+    icon.Name = "Icon"
+    icon.Size = UDim2.new(0, 14, 0, 14)
+    icon.Position = UDim2.new(0, 5, 0.5, -7)
+    icon.BackgroundTransparency = 1
+    icon.Image = config.icon or ""
+    icon.Parent = capsule
+
+    local label = Instance.new("TextLabel")
+    label.Name = "Label"
+    label.Position = UDim2.new(0, 22, 0, 0)
+    label.Size = UDim2.new(1, -26, 1, 0)
+    label.BackgroundTransparency = 1
+    label.Font = Enum.Font.GothamBold
+    label.TextSize = 10
+    label.TextColor3 = config.textColor or Color3.fromRGB(255, 255, 255)
+    label.TextXAlignment = Enum.TextXAlignment.Center
+    label.Text = config.text or instance.Name
+    label.Parent = capsule
+
+    gui.Parent = safeContainer
+
+    local newEntry = {
+        gui = gui,
+        capsule = capsule,
+        stroke = stroke,
+        icon = icon,
+        label = label
+    }
+    objectEspInstances[instance] = newEntry
+    return newEntry
+end
+
+local function updateKeysESP(localPos, activeObjects)
+    if not State.espKeysEnabled then return end
+    local effects = Workspace:FindFirstChild("Effects")
+    if not effects then return end
+
+    for _, child in ipairs(effects:GetChildren()) do
+        if string.sub(child.Name, 1, 10) == "DroppedKey" then
+            local part = child:IsA("BasePart") and child or (child:IsA("Model") and (child.PrimaryPart or child:FindFirstChildWhichIsA("BasePart")))
+            if part then
+                local dist = math.floor((part.Position - localPos).Magnitude)
+                if dist <= 350 then
+                    activeObjects[child] = true
+                    local keySuffix = string.lower(string.sub(child.Name, 11))
+                    local keyConfig = {
+                        width = 135,
+                        offsetY = 1.6,
+                        bgColor = Color3.fromRGB(22, 18, 10),
+                        strokeColor = Color3.fromRGB(255, 215, 0),
+                        textColor = Color3.fromRGB(255, 225, 80),
+                        icon = ESPAssets.KeyCircle,
+                        text = "Circle Key [" .. dist .. "m]"
+                    }
+
+                    if string.find(keySuffix, "square") then
+                        keyConfig.bgColor = Color3.fromRGB(10, 18, 28)
+                        keyConfig.strokeColor = Color3.fromRGB(0, 229, 255)
+                        keyConfig.textColor = Color3.fromRGB(100, 240, 255)
+                        keyConfig.icon = ESPAssets.KeySquare
+                        keyConfig.text = "Square Key [" .. dist .. "m]"
+                    elseif string.find(keySuffix, "triangle") then
+                        keyConfig.bgColor = Color3.fromRGB(28, 10, 15)
+                        keyConfig.strokeColor = Color3.fromRGB(255, 45, 85)
+                        keyConfig.textColor = Color3.fromRGB(255, 90, 120)
+                        keyConfig.icon = ESPAssets.KeyTriangle
+                        keyConfig.text = "Triangle Key [" .. dist .. "m]"
+                    elseif string.find(keySuffix, "circle") then
+                        keyConfig.bgColor = Color3.fromRGB(22, 18, 10)
+                        keyConfig.strokeColor = Color3.fromRGB(255, 215, 0)
+                        keyConfig.textColor = Color3.fromRGB(255, 225, 80)
+                        keyConfig.icon = ESPAssets.KeyCircle
+                        keyConfig.text = "Circle Key [" .. dist .. "m]"
+                    else
+                        keyConfig.text = "Key " .. string.sub(child.Name, 11) .. " [" .. dist .. "m]"
+                    end
+
+                    local entry = createOrGetObjectESP(child, keyConfig)
+                    entry.label.Text = keyConfig.text
+                    entry.label.TextColor3 = keyConfig.textColor
+                    entry.stroke.Color = keyConfig.strokeColor
+                    entry.icon.Image = keyConfig.icon
+                    entry.gui.Adornee = part
+                    entry.gui.Enabled = true
+                end
+            end
+        end
+    end
+end
+
+local function updateExitDoorsESP(localPos, activeObjects)
+    if not State.espExitDoorsEnabled then return end
+    local hnsMap = Workspace:FindFirstChild("HideAndSeekMap")
+    local fixedDoors = hnsMap and hnsMap:FindFirstChild("NEWFIXEDDOORS")
+    local floor1 = fixedDoors and fixedDoors:FindFirstChild("Floor1")
+    local exitDoorsFolder = floor1 and floor1:FindFirstChild("EXITDOORS")
+
+    if exitDoorsFolder then
+        for _, door in ipairs(exitDoorsFolder:GetChildren()) do
+            if string.find(string.upper(door.Name), "EXITDOOR") or string.find(string.upper(door.Name), "EXIT") then
+                local part = door:IsA("BasePart") and door or (door:IsA("Model") and (door.PrimaryPart or door:FindFirstChildWhichIsA("BasePart")))
+                if part then
+                    local dist = math.floor((part.Position - localPos).Magnitude)
+                    if dist <= 350 then
+                        activeObjects[door] = true
+                        local doorConfig = {
+                            width = 145,
+                            offsetY = 3.5,
+                            bgColor = Color3.fromRGB(10, 25, 18),
+                            strokeColor = Color3.fromRGB(0, 255, 140),
+                            textColor = Color3.fromRGB(80, 255, 180),
+                            icon = ESPAssets.ExitDoor,
+                            text = "ESCAPE EXIT [" .. dist .. "m]"
+                        }
+                        local entry = createOrGetObjectESP(door, doorConfig)
+                        entry.label.Text = doorConfig.text
+                        entry.gui.Adornee = part
+                        entry.gui.Enabled = true
+                    end
+                end
+            end
+        end
+    end
+end
+
+local function updateItemsESP(localPos, activeObjects)
+    if not State.espItemsEnabled then return end
+
+    local function checkItem(inst)
+        if not inst or not inst.Parent then return end
+        if inst.Parent:FindFirstChildOfClass("Humanoid") then
+            return
+        end
+
+        local isWeapon = false
+        local isBandage = false
+        local nameLower = string.lower(inst.Name)
+
+        if string.find(nameLower, "revolver") or string.find(nameLower, "gun") or string.find(nameLower, "baton") or string.find(nameLower, "submachine") or inst:FindFirstChild("GunScript") or inst:FindFirstChild("InfoClient") then
+            isWeapon = true
+        elseif string.find(nameLower, "bandage") or string.find(nameLower, "medkit") then
+            isBandage = true
+        end
+
+        if isWeapon or isBandage then
+            local part = inst:IsA("BasePart") and inst or (inst:IsA("Model") and (inst.PrimaryPart or inst:FindFirstChildWhichIsA("BasePart"))) or (inst:IsA("Tool") and (inst:FindFirstChild("Handle") or inst:FindFirstChildWhichIsA("BasePart")))
+            if part then
+                local dist = math.floor((part.Position - localPos).Magnitude)
+                if dist <= 250 then
+                    activeObjects[inst] = true
+                    local itemConfig = isWeapon and {
+                        width = 135,
+                        offsetY = 1.2,
+                        bgColor = Color3.fromRGB(28, 18, 10),
+                        strokeColor = Color3.fromRGB(255, 122, 0),
+                        textColor = Color3.fromRGB(255, 160, 60),
+                        icon = ESPAssets.DroppedWeapon,
+                        text = inst.Name .. " [" .. dist .. "m]"
+                    } or {
+                        width = 135,
+                        offsetY = 1.2,
+                        bgColor = Color3.fromRGB(10, 25, 20),
+                        strokeColor = Color3.fromRGB(0, 245, 160),
+                        textColor = Color3.fromRGB(80, 255, 190),
+                        icon = ESPAssets.DroppedBandage,
+                        text = "Bandage [" .. dist .. "m]"
+                    }
+
+                    local entry = createOrGetObjectESP(inst, itemConfig)
+                    entry.label.Text = itemConfig.text
+                    entry.gui.Adornee = part
+                    entry.gui.Enabled = true
+                end
+            end
+        end
+    end
+
+    for _, ch in ipairs(Workspace:GetChildren()) do
+        if ch:IsA("Tool") or ch:IsA("Model") then checkItem(ch) end
+    end
+    local fx = Workspace:FindFirstChild("Effects")
+    if fx then
+        for _, ch in ipairs(fx:GetChildren()) do
+            if ch:IsA("Tool") or ch:IsA("Model") then checkItem(ch) end
+        end
+    end
+end
+
+local function refreshAllWorldObjects(localPos)
+    local activeObjects = {}
+    updateKeysESP(localPos, activeObjects)
+    updateExitDoorsESP(localPos, activeObjects)
+    updateItemsESP(localPos, activeObjects)
+
+    for inst, entry in pairs(objectEspInstances) do
+        if not activeObjects[inst] or not inst.Parent then
+            if entry.gui then entry.gui.Enabled = false end
+            if not inst.Parent then
+                if entry.gui then entry.gui:Destroy() end
+                objectEspInstances[inst] = nil
+            end
+        end
+    end
+end
+
 local lastESPRefresh = 0
 local function refreshESP()
     local now = tick()
@@ -1876,10 +2133,18 @@ local function refreshESP()
             if entry.bottomGui then entry.bottomGui.Enabled = false end
             if entry.hl then entry.hl.Enabled = false end
         end
+        for _, entry in pairs(objectEspInstances) do
+            if entry.gui then entry.gui.Enabled = false end
+        end
         return
     end
 
     local localPos = hrp.Position
+
+    -- 1. Refresh World Object ESPs (Keys, Doors, Weapons, Bandages)
+    refreshAllWorldObjects(localPos)
+
+    -- 2. Refresh Player ESPs
     local candidates = {}
 
     for _, p in ipairs(Players:GetPlayers()) do
@@ -1911,8 +2176,21 @@ local function refreshESP()
 
         -- Top Billboard (Role Header & Ghost Health Bar)
         if State.playerEspEnabled then
+            local isHunter = p:GetAttribute("IsHunter") == true
             local isGuard = isPlayerGuard(p)
-            if isGuard then
+
+            if isHunter then
+                entry.headerFrame.BackgroundColor3 = Color3.fromRGB(40, 5, 10)
+                entry.headerStroke.Color = Color3.fromRGB(255, 30, 40)
+                entry.roleIcon.Image = ESPAssets.HunterSkull
+                entry.nameLabel.Text = "💀 HUNTER 💀 [" .. item.dist .. "m]"
+                entry.nameLabel.TextColor3 = Color3.fromRGB(255, 60, 70)
+                if entry.hl then
+                    entry.hl.Adornee = p.Character
+                    entry.hl.FillColor = Color3.fromRGB(255, 20, 30)
+                    entry.hl.Enabled = true
+                end
+            elseif isGuard then
                 entry.headerFrame.BackgroundColor3 = Color3.fromRGB(35, 10, 15)
                 entry.headerStroke.Color = Color3.fromRGB(255, 45, 65)
                 entry.roleIcon.Image = ESPAssets.GuardIcon
@@ -2014,7 +2292,7 @@ local espRenderConn = nil
 local function startESPThread()
     if not espRenderConn then
         espRenderConn = RunService.RenderStepped:Connect(function()
-            if State.playerEspEnabled or State.espPowersEnabled then
+            if State.playerEspEnabled or State.espPowersEnabled or State.espKeysEnabled or State.espExitDoorsEnabled or State.espItemsEnabled then
                 refreshESP()
             end
         end)
@@ -2022,7 +2300,7 @@ local function startESPThread()
     end
 end
 
-CatESP:CreateToggle("Player ESP", "Displays role badge, distance, contestant tag & ghost health bar", false, function(enabled)
+CatESP:CreateToggle("Player ESP", "Displays role badge (Guard/Hunter/Contestant), distance & ghost health bar", false, function(enabled)
     State.playerEspEnabled = enabled
     if enabled then
         startESPThread()
@@ -2041,6 +2319,45 @@ CatESP:CreateToggle("ESP Powers", "Displays equipped power ability pill capsule 
     else
         for _, entry in pairs(espInstances) do
             if entry.bottomGui then entry.bottomGui.Enabled = false end
+        end
+    end
+end)
+
+CatESP:CreateToggle("ESP Keys", "Displays badges with icons and distance above dropped keys (Circle/Square/Triangle)", false, function(enabled)
+    State.espKeysEnabled = enabled
+    if enabled then
+        startESPThread()
+    else
+        for inst, entry in pairs(objectEspInstances) do
+            if string.sub(inst.Name, 1, 10) == "DroppedKey" and entry.gui then
+                entry.gui.Enabled = false
+            end
+        end
+    end
+end)
+
+CatESP:CreateToggle("ESP Exit Doors", "Displays glowing escape exit door markers in Hide & Seek", false, function(enabled)
+    State.espExitDoorsEnabled = enabled
+    if enabled then
+        startESPThread()
+    else
+        for inst, entry in pairs(objectEspInstances) do
+            if string.find(string.upper(inst.Name), "EXIT") and entry.gui then
+                entry.gui.Enabled = false
+            end
+        end
+    end
+end)
+
+CatESP:CreateToggle("ESP Weapons & Items", "Displays ground weapon and bandage drops with distance", false, function(enabled)
+    State.espItemsEnabled = enabled
+    if enabled then
+        startESPThread()
+    else
+        for inst, entry in pairs(objectEspInstances) do
+            if string.sub(inst.Name, 1, 10) ~= "DroppedKey" and not string.find(string.upper(inst.Name), "EXIT") and entry.gui then
+                entry.gui.Enabled = false
+            end
         end
     end
 end)
