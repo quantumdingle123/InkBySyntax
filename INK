@@ -2188,25 +2188,25 @@ local CatESP = VisualsTab:CreateCategory("Player & World ESP", true, 1)
 
 local ESPAssets = {
     -- [Top Billboard: Roles & Health]
-    GuardIcon      = "rbxthumb://type=Asset&id=131587600310250&w=150&h=150",
-    ContestantIcon = "rbxthumb://type=Asset&id=137759333215657&w=150&h=150",
-    HealthIcon     = "rbxthumb://type=Asset&id=108046682332370&w=150&h=150",
-    HunterSkull    = "rbxthumb://type=Asset&id=102795198809416&w=150&h=150",
+    GuardIcon      = "rbxthumb://type=Asset&id=131587600310250&w=150&h=150", -- 1_guard_icon (Image: 83349780085312)
+    ContestantIcon = "rbxthumb://type=Asset&id=137759333215657&w=150&h=150", -- 2_contestant_icon (Image: 132745507722031)
+    HealthIcon     = "rbxthumb://type=Asset&id=108046682332370&w=150&h=150", -- 3_health_icon (Image: 83295663127771)
+    HunterSkull    = "rbxthumb://type=Asset&id=102795198809416&w=150&h=150", -- 13_hunter_skull_icon (Image: 128938040692977)
 
     -- [Bottom Billboard: Powers Below Feet]
-    Quicksilver    = "rbxthumb://type=Asset&id=72385806835306&w=150&h=150",
-    LightningGod   = "rbxthumb://type=Asset&id=122234512153024&w=150&h=150",
-    UltraInstinct  = "rbxthumb://type=Asset&id=88301680233730&w=150&h=150",
-    RealityJumper  = "rbxthumb://type=Asset&id=124700912851097&w=150&h=150",
-    GenericPower   = "rbxthumb://type=Asset&id=96417964275911&w=150&h=150",
+    Quicksilver    = "rbxthumb://type=Asset&id=72385806835306&w=150&h=150", -- 4_quicksilver_icon (Image: 95067897228787)
+    LightningGod   = "rbxthumb://type=Asset&id=122234512153024&w=150&h=150", -- 5_lightning_god_icon (Image: 73304449581599)
+    UltraInstinct  = "rbxthumb://type=Asset&id=88301680233730&w=150&h=150", -- 6_ultra_instinct_icon (Image: 95719331249213)
+    RealityJumper  = "rbxthumb://type=Asset&id=124700912851097&w=150&h=150", -- 7_reality_jumper_icon (Image: 86947520558645)
+    GenericPower   = "rbxthumb://type=Asset&id=96417964275911&w=150&h=150", -- 8_generic_power_icon (Image: 122505047985340)
 
     -- [World & Objective ESPs]
-    KeyCircle      = "rbxthumb://type=Asset&id=95806911911936&w=150&h=150",
-    KeySquare      = "rbxthumb://type=Asset&id=95559838815688&w=150&h=150",
-    KeyTriangle    = "rbxthumb://type=Asset&id=80252271461193&w=150&h=150",
-    ExitDoor       = "rbxthumb://type=Asset&id=79579569551802&w=150&h=150",
-    DroppedWeapon  = "rbxthumb://type=Asset&id=78800591689768&w=150&h=150",
-    DroppedBandage = "rbxthumb://type=Asset&id=109209140242630&w=150&h=150"
+    KeyCircle      = "rbxthumb://type=Asset&id=95806911911936&w=150&h=150", -- 9_circle_key_icon (Image: 81821362057352)
+    KeySquare      = "rbxthumb://type=Asset&id=95559838815688&w=150&h=150", -- 10_square_key_icon (Image: 127252171630183)
+    KeyTriangle    = "rbxthumb://type=Asset&id=80252271461193&w=150&h=150", -- 11_triangle_key_icon (Image: 127092863384256)
+    ExitDoor       = "rbxthumb://type=Asset&id=79579569551802&w=150&h=150", -- 12_exit_door_icon (Image: 112233577388050)
+    DroppedWeapon  = "rbxthumb://type=Asset&id=78800591689768&w=150&h=150", -- 14_weapon_icon (Image: 117770953173846)
+    DroppedBandage = "rbxthumb://type=Asset&id=109209140242630&w=150&h=150" -- 15_bandage_icon (Image: 129437556919042)
 }
 
 -- Background Async Preload for Zero-Lag Rendering
@@ -2744,6 +2744,10 @@ local function updateExitDoorsESP(localPos, activeObjects)
                     }
                     local entry = createOrGetObjectESP(door, doorConfig)
                     entry.label.Text = doorConfig.text
+                    entry.label.TextColor3 = doorConfig.textColor
+                    entry.stroke.Color = doorConfig.strokeColor
+                    entry.capsule.BackgroundColor3 = doorConfig.bgColor
+                    entry.icon.Image = doorConfig.icon
                     entry.gui.Adornee = part
                     entry.gui.Enabled = true
                 end
@@ -2815,6 +2819,10 @@ local function updateItemsESP(localPos, activeObjects)
 
                     local entry = createOrGetObjectESP(inst, itemConfig)
                     entry.label.Text = itemConfig.text
+                    entry.label.TextColor3 = itemConfig.textColor
+                    entry.stroke.Color = itemConfig.strokeColor
+                    entry.capsule.BackgroundColor3 = itemConfig.bgColor
+                    entry.icon.Image = itemConfig.icon
                     entry.gui.Adornee = part
                     entry.gui.Enabled = true
                 end
