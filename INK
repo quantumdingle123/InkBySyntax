@@ -353,49 +353,160 @@ local function isPlayerInRLGLSafeZone()
     return (z >= 135) or (z <= -535)
 end
 
-CatRLGL:CreateButton("Remove Injury", "Restore standing humanoid state & joints", "Cleanse", function()
+local function cleanseCharacterInjuries()
     local char = localPlayer.Character
-    local hum = char and char:FindFirstChildOfClass("Humanoid")
-    if hum then
-        hum:ChangeState(Enum.HumanoidStateType.GettingUp)
-        hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
-        hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not (hum and hrp) then return end
+
+    local torso = char:FindFirstChild("Torso") or char:FindFirstChild("UpperTorso")
+    hum.PlatformStand = false
+    hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+    hum:SetStateEnabled(Enum.HumanoidStateType.Freefall, true)
+    hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+    hum:SetStateEnabled(Enum.HumanoidStateType.Jumping, true)
+
+    for _, state in ipairs({
+        Enum.HumanoidStateType.FallingDown,
+        Enum.HumanoidStateType.Seated,
+        Enum.HumanoidStateType.Swimming,
+        Enum.HumanoidStateType.Flying,
+        Enum.HumanoidStateType.StrafingNoPhysics,
+        Enum.HumanoidStateType.Ragdoll
+    }) do
+        hum:SetStateEnabled(state, false)
     end
-    if char then
-        local torso = char:FindFirstChild("Torso") or char:FindFirstChild("UpperTorso")
-        local root = char:FindFirstChild("HumanoidRootPart")
-        if torso and root and not torso:FindFirstChild("RootJoint") then
-            local rj = Instance.new("Motor6D")
-            rj.Name = "RootJoint"
-            rj.Part0 = root
-            rj.Part1 = torso
-            rj.C0 = CFrame.new(0, 0, 0, -1, 0, 0, 0, 0, 1, 0, 1, -0)
-            rj.C1 = CFrame.new(0, 0, 0, -1, 0, 0, 0, 0, 1, 0, 1, -0)
-            rj.Parent = root
+
+    -- Destroy ragdoll constraints & attachments in HumanoidRootPart
+    for _, child in ipairs(hrp:GetChildren()) do
+        if child:IsA("BallSocketConstraint") or string.match(child.Name, "^CacheAttachment") then
+            pcall(function() child:Destroy() end)
         end
     end
+
+    -- Reconnect all motor joints on torso
+    if torso then
+        for _, jointName in ipairs({ "Left Hip", "Left Shoulder", "Neck", "Right Hip", "Right Shoulder", "RootJoint" }) do
+            local joint = torso:FindFirstChild(jointName) or hrp:FindFirstChild(jointName)
+            if joint and joint:IsA("Motor6D") and not joint.Part0 then
+                joint.Part0 = torso
+            end
+        end
+    end
+
+    -- Destroy custom bone deformation objects in limbs
+    for _, part in ipairs(char:GetChildren()) do
+        if part:IsA("BasePart") then
+            local bc = part:FindFirstChild("BoneCustom")
+            if bc then pcall(function() bc:Destroy() end) end
+        end
+    end
+
+    -- Destroy ragdoll and injury status tags
+    for _, tag in ipairs({ "Ragdoll", "LocalRagdoll", "Stun", "RotateDisabled", "RagdollWakeupImmunity", "Injured", "Crawling" }) do
+        local inst = char:FindFirstChild(tag)
+        if inst then pcall(function() inst:Destroy() end) end
+    end
+
+    -- Destroy local ragdoll effects from workspace
+    local fx = Workspace:FindFirstChild("Effects")
+    local localRagdolls = fx and fx:FindFirstChild("LocalRagdolls")
+    local myRagdoll = localRagdolls and localRagdolls:FindFirstChild(localPlayer.Name)
+    if myRagdoll then pcall(function() myRagdoll:Destroy() end) end
+
+    -- Reset character attributes
+    if char:GetAttribute("Injured") ~= nil then char:SetAttribute("Injured", false) end
+    if char:GetAttribute("Downed") ~= nil then char:SetAttribute("Downed", false) end
+    if char:GetAttribute("Crawling") ~= nil then char:SetAttribute("Crawling", false) end
+
     notify("RLGL", "Injury cleansed & joints restored.")
+end
+
+CatRLGL:CreateButton("Remove Injury", "Restore standing humanoid state & joints", "Cleanse", function()
+    cleanseCharacterInjuries()
 end)
+
+local antiCrawlConn = nil
+
+local function purgeCrawling(char)
+    if not char then return end
+    local crawling = char:FindFirstChild("Crawling")
+    if crawling then
+        pcall(function() crawling:Destroy() end)
+    end
+    if char:GetAttribute("Crawling") then
+        char:SetAttribute("Crawling", false)
+    end
+    if char:GetAttribute("Downed") then
+        char:SetAttribute("Downed", false)
+    end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        if hum.PlatformStand then hum.PlatformStand = false end
+        local state = hum:GetState()
+        if state == Enum.HumanoidStateType.FallingDown or state == Enum.HumanoidStateType.Ragdoll or state == Enum.HumanoidStateType.Seated then
+            hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+        end
+        hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+        hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
+
+        -- Stop active crawling animation tracks
+        local animator = hum:FindFirstChildOfClass("Animator")
+        if animator then
+            for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+                local animName = string.lower(track.Name or "")
+                if string.find(animName, "crawl") or string.find(animName, "downed") then
+                    track:Stop()
+                end
+            end
+        end
+    end
+end
+
+local function hookAntiCrawl(char)
+    if antiCrawlConn then
+        antiCrawlConn:Disconnect()
+        antiCrawlConn = nil
+    end
+    if not char then return end
+    antiCrawlConn = char.ChildAdded:Connect(function(child)
+        if State.antiCrawlEnabled and child.Name == "Crawling" then
+            task.defer(function() pcall(function() child:Destroy() end) end)
+        end
+    end)
+end
 
 CatRLGL:CreateToggle("Anti Crawl", "Prevents falling into downed / crawling state", false, function(enabled)
     State.antiCrawlEnabled = enabled
     if enabled then
-        task.spawn(function()
-            while State.antiCrawlEnabled do
-                if isCurrentGame("RedLightGreenLight") then
-                    local char = localPlayer.Character
-                    local hum = char and char:FindFirstChildOfClass("Humanoid")
-                    if hum then
-                        if hum:GetState() == Enum.HumanoidStateType.FallingDown or hum:GetState() == Enum.HumanoidStateType.Ragdoll then
-                            hum:ChangeState(Enum.HumanoidStateType.GettingUp)
-                        end
-                        hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
-                        hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
-                    end
+        purgeCrawling(localPlayer.Character)
+        hookAntiCrawl(localPlayer.Character)
+
+        if not Connections.antiCrawlCharAdded then
+            Connections.antiCrawlCharAdded = localPlayer.CharacterAdded:Connect(function(newChar)
+                if State.antiCrawlEnabled then
+                    task.wait(0.2)
+                    purgeCrawling(newChar)
+                    hookAntiCrawl(newChar)
                 end
+            end)
+        end
+
+        Threads.antiCrawlLoop = task.spawn(function()
+            while State.antiCrawlEnabled do
+                purgeCrawling(localPlayer.Character)
                 task.wait(0.2)
             end
         end)
+        notify("RLGL", "Anti Crawl engaged.")
+    else
+        if antiCrawlConn then
+            antiCrawlConn:Disconnect()
+            antiCrawlConn = nil
+        end
+        Threads.antiCrawlLoop = nil
+        notify("RLGL", "Anti Crawl disengaged.")
     end
 end)
 
