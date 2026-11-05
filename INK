@@ -2336,11 +2336,36 @@ local function createOrGetESP(player)
         return entry
     end
 
-    -- [Top Billboard: Roles & Ghost Trail Health Bar]
+    -- ==============================================================================
+    -- [ADVANCED ESP ENGINE ARCHITECTURE - SLEEK MINIMALIST DESIGN]
+    -- Tier 1: Role Icon (22x22, Center Aligned, AlwaysOnTop = true)
+    --         - Hunter Skull:    ESPAssets.HunterSkull (Decal 102795198809416 / Image 128938040692977)
+    --         - Guard Hood:      ESPAssets.GuardIcon (Decal 131587600310250 / Image 83349780085312)
+    --         - Contestant:      ESPAssets.ContestantIcon (Decal 137759333215657 / Image 132745507722031)
+    -- Tier 2: Player Display Name & Proximity (GothamBold 11px, Center Aligned, TextStroke Outline)
+    --         - Hunter:          Color3.fromRGB(255, 60, 70)
+    --         - Guard:           Color3.fromRGB(255, 75, 95)
+    --         - Contestant:      Color3.fromRGB(255, 255, 255)
+    --         - Zero dark background box container (BackgroundTransparency = 1)
+    -- Tier 3: Health Bar (75x4 Slim Track, Dynamic HP Color Shift + Ghost Trail Tween)
+    --         - Full/High HP:    Color3.fromRGB(0, 255, 140) [Emerald Green]
+    --         - Mid HP (<=60%):  Color3.fromRGB(255, 190, 0) [Amber Yellow]
+    --         - Low HP (<=25%):  Color3.fromRGB(255, 40, 40)  [Crimson Red]
+    --         - Ghost Trail:     Color3.fromRGB(255, 255, 255) Sine Tween (0.6s)
+    -- World Objects / Items ESP:
+    --         - Pure floating 28x28 3D icons, zero text labels, zero background boxes
+    --         - Circle Key:      ESPAssets.KeyCircle (Decal 95806911911936 / Image 81821362057352)
+    --         - Square Key:      ESPAssets.KeySquare (Decal 95559838815688 / Image 127252171630183)
+    --         - Triangle Key:    ESPAssets.KeyTriangle (Decal 80252271461193 / Image 127092863384256)
+    --         - Exit Door:       ESPAssets.ExitDoor (Decal 79579569551802 / Image 112233577388050)
+    --         - Weapon:          ESPAssets.DroppedWeapon (Decal 78800591689768 / Image 117770953173846)
+    --         - Bandage:         ESPAssets.DroppedBandage (Decal 109209140242630 / Image 129437556919042)
+    -- ==============================================================================
+    -- [Top Billboard: Clean Vertical Tier - Role Icon -> Centered Name -> Centered Health Bar]
     local topGui = Instance.new("BillboardGui")
     topGui.Name = "AdvancedESP_" .. player.Name
-    topGui.Size = UDim2.new(0, 155, 0, 42)
-    topGui.StudsOffset = Vector3.new(0, 3.6, 0)
+    topGui.Size = UDim2.new(0, 140, 0, 52)
+    topGui.StudsOffset = Vector3.new(0, 2.2, 0)
     topGui.AlwaysOnTop = true
     topGui.LightInfluence = 0
     topGui.MaxDistance = 300
@@ -2356,89 +2381,59 @@ local function createOrGetESP(player)
     topList.SortOrder = Enum.SortOrder.LayoutOrder
     topList.FillDirection = Enum.FillDirection.Vertical
     topList.HorizontalAlignment = Enum.HorizontalAlignment.Center
-    topList.Padding = UDim.new(0, 3)
+    topList.Padding = UDim.new(0, 2)
     topList.Parent = topRoot
 
-    -- Role & Name Row
-    local headerFrame = Instance.new("Frame")
-    headerFrame.Name = "Header"
-    headerFrame.Size = UDim2.new(1, 0, 0, 20)
-    headerFrame.BackgroundColor3 = Color3.fromRGB(15, 20, 32)
-    headerFrame.BackgroundTransparency = 0.25
-    headerFrame.Parent = topRoot
-
-    local headerCorner = Instance.new("UICorner")
-    headerCorner.CornerRadius = UDim.new(0, 5)
-    headerCorner.Parent = headerFrame
-
-    local headerStroke = Instance.new("UIStroke")
-    headerStroke.Thickness = 1
-    headerStroke.Color = Color3.fromRGB(0, 150, 255)
-    headerStroke.Transparency = 0.3
-    headerStroke.Parent = headerFrame
-
+    -- Tier 1: Centered Role Icon (No background box)
     local roleIcon = Instance.new("ImageLabel")
     roleIcon.Name = "RoleIcon"
-    roleIcon.Size = UDim2.new(0, 14, 0, 14)
-    roleIcon.Position = UDim2.new(0, 4, 0.5, -7)
+    roleIcon.LayoutOrder = 1
+    roleIcon.Size = UDim2.new(0, 22, 0, 22)
     roleIcon.BackgroundTransparency = 1
     roleIcon.ScaleType = Enum.ScaleType.Fit
     roleIcon.Image = ESPAssets.ContestantIcon
-    roleIcon.Parent = headerFrame
+    roleIcon.Parent = topRoot
 
+    -- Tier 2: Centered Player Name (No background box, crisp stroke outline)
     local nameLabel = Instance.new("TextLabel")
     nameLabel.Name = "NameLabel"
-    nameLabel.Position = UDim2.new(0, 22, 0, 0)
-    nameLabel.Size = UDim2.new(1, -24, 1, 0)
+    nameLabel.LayoutOrder = 2
+    nameLabel.Size = UDim2.new(1, 0, 0, 15)
     nameLabel.BackgroundTransparency = 1
     nameLabel.Font = Enum.Font.GothamBold
-    nameLabel.TextSize = 10
+    nameLabel.TextSize = 11
     nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-    nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+    nameLabel.TextXAlignment = Enum.TextXAlignment.Center
+    nameLabel.TextYAlignment = Enum.TextYAlignment.Center
     nameLabel.Text = player.DisplayName
-    nameLabel.Parent = headerFrame
+    nameLabel.Parent = topRoot
 
-    -- Health Bar Row
-    local hpFrame = Instance.new("Frame")
-    hpFrame.Name = "HealthRow"
-    hpFrame.Size = UDim2.new(1, 0, 0, 14)
-    hpFrame.BackgroundColor3 = Color3.fromRGB(12, 14, 22)
-    hpFrame.BackgroundTransparency = 0.35
-    hpFrame.Parent = topRoot
+    local nameStroke = Instance.new("UIStroke")
+    nameStroke.Thickness = 1.2
+    nameStroke.Color = Color3.fromRGB(0, 0, 0)
+    nameStroke.Transparency = 0.2
+    nameStroke.Parent = nameLabel
 
-    local hpCorner = Instance.new("UICorner")
-    hpCorner.CornerRadius = UDim.new(0, 4)
-    hpCorner.Parent = hpFrame
-
-    local hpStroke = Instance.new("UIStroke")
-    hpStroke.Thickness = 1
-    hpStroke.Color = Color3.fromRGB(40, 48, 65)
-    hpStroke.Transparency = 0.5
-    hpStroke.Parent = hpFrame
-
-    local hpIcon = Instance.new("ImageLabel")
-    hpIcon.Name = "HPIcon"
-    hpIcon.Size = UDim2.new(0, 11, 0, 11)
-    hpIcon.Position = UDim2.new(0, 4, 0.5, -5)
-    hpIcon.BackgroundTransparency = 1
-    hpIcon.ScaleType = Enum.ScaleType.Fit
-    hpIcon.Image = ESPAssets.HealthIcon
-    hpIcon.Parent = hpFrame
-
+    -- Tier 3: Centered Health Bar (Slim Track, No Outer Box)
     local barTrack = Instance.new("Frame")
     barTrack.Name = "BarTrack"
-    barTrack.Position = UDim2.new(0, 19, 0.5, -3)
-    barTrack.Size = UDim2.new(1, -23, 0, 6)
-    barTrack.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-    barTrack.BackgroundTransparency = 0.7
+    barTrack.LayoutOrder = 3
+    barTrack.Size = UDim2.new(0, 75, 0, 4)
+    barTrack.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+    barTrack.BackgroundTransparency = 0.4
     barTrack.ClipsDescendants = true
-    barTrack.Parent = hpFrame
+    barTrack.Parent = topRoot
 
     local barCorner = Instance.new("UICorner")
     barCorner.CornerRadius = UDim.new(1, 0)
     barCorner.Parent = barTrack
 
-    -- Ghost Trail Bar (Damage Flash)
+    local barStroke = Instance.new("UIStroke")
+    barStroke.Thickness = 1
+    barStroke.Color = Color3.fromRGB(0, 0, 0)
+    barStroke.Transparency = 0.3
+    barStroke.Parent = barTrack
+
     local trailBar = Instance.new("Frame")
     trailBar.Name = "TrailBar"
     trailBar.Position = UDim2.new(0, 0, 0, 0)
@@ -2452,7 +2447,6 @@ local function createOrGetESP(player)
     trailCorner.CornerRadius = UDim.new(1, 0)
     trailCorner.Parent = trailBar
 
-    -- Fill Bar (Dynamic Color)
     local fillBar = Instance.new("Frame")
     fillBar.Name = "FillBar"
     fillBar.Position = UDim2.new(0, 0, 0, 0)
@@ -2467,7 +2461,7 @@ local function createOrGetESP(player)
 
     topGui.Parent = safeContainer
 
-    -- [Bottom Billboard: Powers Below Feet]
+    -- [Bottom Billboard: Powers Below Feet (Zero Dark Box Container)]
     local bottomGui = Instance.new("BillboardGui")
     bottomGui.Name = "PowerESP_" .. player.Name
     bottomGui.Size = UDim2.new(0, 135, 0, 22)
@@ -2481,24 +2475,19 @@ local function createOrGetESP(player)
     local capsule = Instance.new("Frame")
     capsule.Name = "Capsule"
     capsule.Size = UDim2.new(1, 0, 1, 0)
-    capsule.BackgroundColor3 = Color3.fromRGB(15, 18, 28)
-    capsule.BackgroundTransparency = 0.2
+    capsule.BackgroundTransparency = 1
     capsule.Parent = bottomGui
-
-    local capCorner = Instance.new("UICorner")
-    capCorner.CornerRadius = UDim.new(1, 0)
-    capCorner.Parent = capsule
 
     local capStroke = Instance.new("UIStroke")
     capStroke.Thickness = 1.2
-    capStroke.Transparency = 0.2
+    capStroke.Transparency = 1 -- fully transparent box outline
     capStroke.Color = Color3.fromRGB(0, 160, 255)
     capStroke.Parent = capsule
 
     local pIcon = Instance.new("ImageLabel")
     pIcon.Name = "PowerIcon"
-    pIcon.Size = UDim2.new(0, 14, 0, 14)
-    pIcon.Position = UDim2.new(0, 5, 0.5, -7)
+    pIcon.Size = UDim2.new(0, 16, 0, 16)
+    pIcon.Position = UDim2.new(0, 6, 0.5, -8)
     pIcon.BackgroundTransparency = 1
     pIcon.ScaleType = Enum.ScaleType.Fit
     pIcon.Image = ESPAssets.GenericPower
@@ -2506,7 +2495,7 @@ local function createOrGetESP(player)
 
     local pLabel = Instance.new("TextLabel")
     pLabel.Name = "PowerText"
-    pLabel.Position = UDim2.new(0, 24, 0, 0)
+    pLabel.Position = UDim2.new(0, 26, 0, 0)
     pLabel.Size = UDim2.new(1, -28, 1, 0)
     pLabel.BackgroundTransparency = 1
     pLabel.Font = Enum.Font.GothamBold
@@ -2515,6 +2504,12 @@ local function createOrGetESP(player)
     pLabel.TextXAlignment = Enum.TextXAlignment.Left
     pLabel.Text = "Power"
     pLabel.Parent = capsule
+
+    local pStroke = Instance.new("UIStroke")
+    pStroke.Thickness = 1.2
+    pStroke.Color = Color3.fromRGB(0, 0, 0)
+    pStroke.Transparency = 0.2
+    pStroke.Parent = pLabel
 
     bottomGui.Parent = safeContainer
 
@@ -2526,12 +2521,19 @@ local function createOrGetESP(player)
     hl.OutlineColor = Color3.fromRGB(255, 255, 255)
     hl.Parent = safeContainer
 
+    -- Backward-compatible dummy frames so any external hook doesn't throw nil
+    local dummyHeader = Instance.new("Frame")
+    dummyHeader.Visible = false
+    dummyHeader.Parent = topRoot
+    local dummyHeaderStroke = Instance.new("UIStroke")
+    dummyHeaderStroke.Parent = dummyHeader
+
     local playerEntry = {
         topGui = topGui,
         bottomGui = bottomGui,
         hl = hl,
-        headerFrame = headerFrame,
-        headerStroke = headerStroke,
+        headerFrame = dummyHeader,
+        headerStroke = dummyHeaderStroke,
         roleIcon = roleIcon,
         nameLabel = nameLabel,
         fillBar = fillBar,
@@ -2582,9 +2584,10 @@ local function createOrGetObjectESP(instance, config)
         return entry
     end
 
+    -- Pure Floating 3D Icon (No Text, No Dark Box Container)
     local gui = Instance.new("BillboardGui")
     gui.Name = "ObjESP_" .. instance.Name
-    gui.Size = UDim2.new(0, config.width or 140, 0, 22)
+    gui.Size = UDim2.new(0, 28, 0, 28)
     gui.StudsOffset = Vector3.new(0, config.offsetY or 1.5, 0)
     gui.AlwaysOnTop = true
     gui.LightInfluence = 0
@@ -2593,52 +2596,37 @@ local function createOrGetObjectESP(instance, config)
     gui.Enabled = false
     gui.Adornee = instance:IsA("Model") and (instance.PrimaryPart or instance:FindFirstChildWhichIsA("BasePart")) or instance
 
-    local capsule = Instance.new("Frame")
-    capsule.Name = "Capsule"
-    capsule.Size = UDim2.new(1, 0, 1, 0)
-    capsule.BackgroundColor3 = config.bgColor or Color3.fromRGB(15, 18, 28)
-    capsule.BackgroundTransparency = 0.2
-    capsule.Parent = gui
-
-    local capCorner = Instance.new("UICorner")
-    capCorner.CornerRadius = UDim.new(1, 0)
-    capCorner.Parent = capsule
-
-    local stroke = Instance.new("UIStroke")
-    stroke.Thickness = 1.2
-    stroke.Transparency = 0.2
-    stroke.Color = config.strokeColor or Color3.fromRGB(255, 215, 0)
-    stroke.Parent = capsule
-
     local icon = Instance.new("ImageLabel")
     icon.Name = "Icon"
-    icon.Size = UDim2.new(0, 14, 0, 14)
-    icon.Position = UDim2.new(0, 5, 0.5, -7)
+    icon.Size = UDim2.new(1, 0, 1, 0)
+    icon.Position = UDim2.new(0, 0, 0, 0)
     icon.BackgroundTransparency = 1
     icon.ScaleType = Enum.ScaleType.Fit
     icon.Image = config.icon or ""
-    icon.Parent = capsule
+    icon.Parent = gui
 
-    local label = Instance.new("TextLabel")
-    label.Name = "Label"
-    label.Position = UDim2.new(0, 24, 0, 0)
-    label.Size = UDim2.new(1, -28, 1, 0)
-    label.BackgroundTransparency = 1
-    label.Font = Enum.Font.GothamBold
-    label.TextSize = 10
-    label.TextColor3 = config.textColor or Color3.fromRGB(255, 255, 255)
-    label.TextXAlignment = Enum.TextXAlignment.Left
-    label.Text = config.text or instance.Name
-    label.Parent = capsule
+    -- Dummy backward-compatible elements so no external scripts or loops throw nil
+    local dummyCapsule = Instance.new("Frame")
+    dummyCapsule.Visible = false
+    dummyCapsule.BackgroundTransparency = 1
+    dummyCapsule.Parent = gui
+
+    local dummyStroke = Instance.new("UIStroke")
+    dummyStroke.Parent = dummyCapsule
+
+    local dummyLabel = Instance.new("TextLabel")
+    dummyLabel.Visible = false
+    dummyLabel.BackgroundTransparency = 1
+    dummyLabel.Parent = gui
 
     gui.Parent = safeContainer
 
     local newEntry = {
         gui = gui,
-        capsule = capsule,
-        stroke = stroke,
+        capsule = dummyCapsule,
+        stroke = dummyStroke,
         icon = icon,
-        label = label
+        label = dummyLabel
     }
     objectEspInstances[instance] = newEntry
     return newEntry
@@ -2911,44 +2899,40 @@ local function refreshESP()
         activeSet[p] = true
 
         local entry = createOrGetESP(p)
-        entry.topGui.Adornee = item.hrp
+        local char = p.Character
+        local head = char and char:FindFirstChild("Head")
+        entry.topGui.Adornee = head or item.hrp
         entry.bottomGui.Adornee = item.hrp
 
-        -- Top Billboard (Role Header & Ghost Health Bar)
+        -- Top Billboard: Role Icon, Centered Name, Centered Health Bar
         if State.playerEspEnabled then
             local isHunter = isPlayerHunter(p)
             local isGuard = isPlayerGuard(p)
 
             if isHunter then
-                entry.headerFrame.BackgroundColor3 = Color3.fromRGB(40, 5, 10)
-                entry.headerStroke.Color = Color3.fromRGB(255, 30, 40)
                 entry.roleIcon.Image = ESPAssets.HunterSkull
-                entry.nameLabel.Text = "HUNTER [" .. item.dist .. "m]"
+                entry.nameLabel.Text = p.DisplayName .. " [" .. item.dist .. "m]"
                 entry.nameLabel.TextColor3 = Color3.fromRGB(255, 60, 70)
                 if entry.hl then
-                    entry.hl.Adornee = p.Character
+                    entry.hl.Adornee = char
                     entry.hl.FillColor = Color3.fromRGB(255, 20, 30)
                     entry.hl.Enabled = true
                 end
             elseif isGuard then
-                entry.headerFrame.BackgroundColor3 = Color3.fromRGB(35, 10, 15)
-                entry.headerStroke.Color = Color3.fromRGB(255, 45, 65)
                 entry.roleIcon.Image = ESPAssets.GuardIcon
-                entry.nameLabel.Text = "GUARD [" .. item.dist .. "m]"
+                entry.nameLabel.Text = p.DisplayName .. " [" .. item.dist .. "m]"
                 entry.nameLabel.TextColor3 = Color3.fromRGB(255, 75, 95)
                 if entry.hl then
-                    entry.hl.Adornee = p.Character
+                    entry.hl.Adornee = char
                     entry.hl.FillColor = Color3.fromRGB(255, 30, 50)
                     entry.hl.Enabled = true
                 end
             else
-                entry.headerFrame.BackgroundColor3 = Color3.fromRGB(15, 20, 32)
-                entry.headerStroke.Color = Color3.fromRGB(0, 150, 255)
                 entry.roleIcon.Image = ESPAssets.ContestantIcon
                 entry.nameLabel.Text = p.DisplayName .. " [" .. item.dist .. "m]"
                 entry.nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
                 if entry.hl then
-                    entry.hl.Adornee = p.Character
+                    entry.hl.Adornee = char
                     entry.hl.FillColor = p.TeamColor and p.TeamColor.Color or Color3.fromRGB(0, 160, 255)
                     entry.hl.Enabled = true
                 end
