@@ -101,154 +101,121 @@ local State = {
     infiniteJumpEnabled = false,
     instantInteractEnabled = false,
     fpsBoosterEnabled = false,
+    noStunEnabled = false,
 
-    -- Visual Awakenings
-    visualUltraInstinctEnabled = false,
-    lightningGodEnabled = false,
-    visualQuicksilverEnabled = false,
-    visualRealityJumperEnabled = false,
-
+    -- UI Settings & Persistence
     themeName = "Sapphire"
 }
 
 local Connections = {}
 local Threads = {}
-local Timestamps = {
-    lastRelaxTime = 0,
-    lastPressTime = 0
-}
 
--- ==============================================================================
--- [3. SUPPORT HELPERS & GAME INTROSPECTION]
--- ==============================================================================
-
--- [3.1] Mobile-Safe Architecture: Zero Virtual Input
--- All virtual keypresses and simulated mouse clicks are forbidden for mobile integrity.
-
--- [3.2] Mini-Game State Detector (500ms Caching)
-local cachedGame = nil
-local lastGameCheck = 0
-
-local function getCurrentGame()
-    if tick() - lastGameCheck < 0.5 then
-        return cachedGame
-    end
-    lastGameCheck = tick()
-    local values = Workspace:FindFirstChild("Values")
-    local currentGameObj = values and values:FindFirstChild("CurrentGame")
-    if currentGameObj and currentGameObj.Value ~= "" then
-        cachedGame = currentGameObj.Value
-    else
-        cachedGame = nil
-    end
-    return cachedGame
-end
-
-local function isCurrentGame(gameName)
-    return getCurrentGame() == gameName
-end
-
--- [3.3] Remote Introspection & Garbage Collection Scanner
-local RemoteEngine = { Cache = {} }
-
-function RemoteEngine:GetWrapper(remoteName)
-    if self.Cache[remoteName] then
-        return self.Cache[remoteName]
-    end
-
-    local searchGC = (typeof(filtergc) == "function" and function() return filtergc("table", {}, false) end)
-        or (typeof(getgc) == "function" and function() return getgc(true) end)
-
-    if searchGC and typeof(debug.getupvalue) == "function" then
-        local ok, tables = pcall(searchGC)
-        if ok and type(tables) == "table" then
-            for _, tbl in ipairs(tables) do
-                if typeof(tbl) == "table" then
-                    local ok2, fire = pcall(rawget, tbl, "FireServer")
-                    if ok2 and typeof(fire) == "function" and (not islclosure or islclosure(fire)) then
-                        for i = 1, 40 do
-                            local ok3, upval = pcall(debug.getupvalue, fire, i)
-                            if ok3 and typeof(upval) == "Instance" and upval:IsA("RemoteEvent") and upval.Name == remoteName then
-                                self.Cache[remoteName] = tbl
-                                return tbl
-                            end
-                        end
-                    end
-                end
-            end
+-- Clean disconnect on execution/cleanup
+local function cleanUpConnections()
+    for name, conn in pairs(Connections) do
+        if typeof(conn) == "RBXScriptConnection" then
+            pcall(function() conn:Disconnect() end)
         end
     end
-    return nil
+    table.clear(Connections)
+    for name, th in pairs(Threads) do
+        pcall(function() task.cancel(th) end)
+    end
+    table.clear(Threads)
 end
 
-function RemoteEngine:Fire(remoteName, ...)
-    local wrapper = self:GetWrapper(remoteName)
-    if wrapper and typeof(wrapper.FireServer) == "function" then
-        return select(1, pcall(wrapper.FireServer, wrapper, ...))
+-- ==============================================================================
+-- [3. SAFE GAMEPLAY LOGIC & CONTROLS]
+-- All virtual keypresses and simulated mouse clicks are forbidden for mobile integrity.
+-- ==============================================================================
+
+-- [3.1] Humanoid Safe Recovery & Anti-Crawl (Restores upright walking state)
+local function cleanseHumanoidState()
+    local char = localPlayer.Character
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hum or not hrp then return end
+
+    -- Disable ragdoll/knockdown states cleanly
+    hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
+    hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+    hum.PlatformStand = false
+    hum.Sit = false
+
+    -- Reset fallen joints if knocked down
+    for _, motor in ipairs(char:GetDescendants()) do
+        if motor:IsA("Motor6D") and not motor.Enabled then
+            motor.Enabled = true
+        end
     end
-    local direct = ReplicatedStorage:FindFirstChild(remoteName, true)
-    if direct and direct:IsA("RemoteEvent") then
-        return select(1, pcall(direct.FireServer, direct, ...))
+
+    -- Force Humanoid back to upright Running state
+    hum:ChangeState(Enum.HumanoidStateType.Running)
+
+    -- If stuck crawling, restore upright root joint orientation
+    local rootJoint = char:FindFirstChild("RootJoint", true)
+    if rootJoint then
+        rootJoint.C0 = CFrame.new(0, 0, 0, -1, 0, 0, 0, 0, 1, 0, 1, -0)
+    end
+end
+
+-- [3.2] Red Light Freeze Assistant (No virtual keystrokes: pure zero-velocity)
+local function freezeMovement()
+    local char = localPlayer.Character
+    if not char then return end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hrp then
+        hrp.AssemblyLinearVelocity = Vector3.zero
+        hrp.AssemblyAngularVelocity = Vector3.zero
+    end
+    if hum then
+        hum:Move(Vector3.zero, false)
+    end
+end
+
+-- [3.3] Safe Platform Spawner (Physics-based solid platform under feet)
+local function createSafeWalkway(parent, name, cframe, size)
+    local existing = parent:FindFirstChild(name)
+    if existing then
+        existing.CFrame = cframe
+        return existing
+    end
+
+    local part = Instance.new("Part")
+    part.Name = name
+    part.Size = size or Vector3.new(6, 1, 6)
+    part.CFrame = cframe
+    part.Anchored = true
+    part.CanCollide = true
+    part.Transparency = 0.5
+    part.Material = Enum.Material.ForceField
+    part.Color = Color3.fromRGB(0, 200, 255)
+    part.CastShadow = false
+    part.Parent = parent
+    return part
+end
+
+-- [3.4] Proximity Prompt & Auto QTE Assistant
+local function firePrompt(prompt)
+    if not prompt or not prompt:IsA("ProximityPrompt") then return end
+    prompt.HoldDuration = 0
+    pcall(fireproximityprompt, prompt)
+end
+
+local function solveQTECircle(ringGui)
+    if not ringGui then return end
+    -- Visual alignment detection without mouse click spoofing
+    local cursor = ringGui:FindFirstChild("Cursor") or ringGui:FindFirstChild("Indicator")
+    local target = ringGui:FindFirstChild("TargetZone") or ringGui:FindFirstChild("Zone")
+    if cursor and target then
+        local diff = math.abs(cursor.Rotation - target.Rotation)
+        if diff <= 12 or diff >= 348 then
+            return true
+        end
     end
     return false
-end
-
-function RemoteEngine:UseTool(toolName, moveName, data)
-    if not toolName then return false end
-    return self:Fire("UsedTool", moveName or "UsingMoveCustom", toolName, nil, data or { Clicked = true })
-end
-
--- [3.4] Non-Anchoring Movement Restrictor (Zero Anchoring)
-local originalWalkSpeed = 16
-local controlsDisabled = false
-
-local function setPlayerFrozen(freeze)
-    local character = localPlayer.Character
-    local hum = character and character:FindFirstChildOfClass("Humanoid")
-    local hrp = character and character:FindFirstChild("HumanoidRootPart")
-
-    if freeze then
-        if hum then
-            if hum.WalkSpeed > 0 then originalWalkSpeed = hum.WalkSpeed end
-            hum.WalkSpeed = 0
-            hum.JumpPower = 0
-            if hum.JumpHeight > 0 then hum.JumpHeight = 0 end
-        end
-        if hrp then
-            hrp.AssemblyLinearVelocity = Vector3.zero
-            hrp.AssemblyAngularVelocity = Vector3.zero
-            hrp.Velocity = Vector3.zero
-            hrp.RotVelocity = Vector3.zero
-        end
-        pcall(function()
-            local pScripts = localPlayer:FindFirstChild("PlayerScripts")
-            local pModule = pScripts and pScripts:FindFirstChild("PlayerModule")
-            if pModule then
-                local ctrl = require(pModule):GetControls()
-                if ctrl and not controlsDisabled then
-                    ctrl:Disable()
-                    controlsDisabled = true
-                end
-            end
-        end)
-    else
-        if hum then
-            hum.WalkSpeed = originalWalkSpeed or 16
-            hum.JumpPower = 50
-            hum.JumpHeight = 7.2
-        end
-        pcall(function()
-            local pScripts = localPlayer:FindFirstChild("PlayerScripts")
-            local pModule = pScripts and pScripts:FindFirstChild("PlayerModule")
-            if pModule then
-                local ctrl = require(pModule):GetControls()
-                if ctrl and controlsDisabled then
-                    ctrl:Enable()
-                    controlsDisabled = false
-                end
-            end
-        end)
-    end
 end
 
 -- [3.5] Crosshair & Smart Aimbot Targeting
@@ -345,584 +312,317 @@ local GamesTab = Window:CreateTab("Games", "Gamepad")
 -- ------------------------------------------------------------------------------
 local CatRLGL = GamesTab:CreateCategory("Red Light Green Light", true, 1)
 
-local function isPlayerInRLGLSafeZone()
-    local char = localPlayer.Character
-    local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    if not hrp then return false end
-    local z = hrp.Position.Z
-    return (z >= 135) or (z <= -535)
-end
-
-local function cleanseCharacterInjuries()
+CatRLGL:CreateButton("Remove Injury", "Restores standing humanoid state & cleanses crawl", function()
     local char = localPlayer.Character
     if not char then return end
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    local hrp = char:FindFirstChild("HumanoidRootPart")
-    if not (hum and hrp) then return end
-
-    local torso = char:FindFirstChild("Torso") or char:FindFirstChild("UpperTorso")
-    hum.PlatformStand = false
-    hum:ChangeState(Enum.HumanoidStateType.GettingUp)
-    hum:SetStateEnabled(Enum.HumanoidStateType.Freefall, true)
-    hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
-    hum:SetStateEnabled(Enum.HumanoidStateType.Jumping, true)
-
-    for _, state in ipairs({
-        Enum.HumanoidStateType.FallingDown,
-        Enum.HumanoidStateType.Seated,
-        Enum.HumanoidStateType.Swimming,
-        Enum.HumanoidStateType.Flying,
-        Enum.HumanoidStateType.StrafingNoPhysics,
-        Enum.HumanoidStateType.Ragdoll
-    }) do
-        hum:SetStateEnabled(state, false)
-    end
-
-    -- Destroy ragdoll constraints & attachments in HumanoidRootPart
-    for _, child in ipairs(hrp:GetChildren()) do
-        if child:IsA("BallSocketConstraint") or string.match(child.Name, "^CacheAttachment") then
-            pcall(function() child:Destroy() end)
-        end
-    end
-
-    -- Reconnect all motor joints on torso
-    if torso then
-        for _, jointName in ipairs({ "Left Hip", "Left Shoulder", "Neck", "Right Hip", "Right Shoulder", "RootJoint" }) do
-            local joint = torso:FindFirstChild(jointName) or hrp:FindFirstChild(jointName)
-            if joint and joint:IsA("Motor6D") and not joint.Part0 then
-                joint.Part0 = torso
-            end
-        end
-    end
-
-    -- Destroy custom bone deformation objects in limbs
-    for _, part in ipairs(char:GetChildren()) do
-        if part:IsA("BasePart") then
-            local bc = part:FindFirstChild("BoneCustom")
-            if bc then pcall(function() bc:Destroy() end) end
-        end
-    end
-
-    -- Destroy ragdoll and injury status tags
-    for _, tag in ipairs({ "Ragdoll", "LocalRagdoll", "Stun", "RotateDisabled", "RagdollWakeupImmunity", "Injured", "Crawling" }) do
-        local inst = char:FindFirstChild(tag)
-        if inst then pcall(function() inst:Destroy() end) end
-    end
-
-    -- Destroy local ragdoll effects from workspace
-    local fx = Workspace:FindFirstChild("Effects")
-    local localRagdolls = fx and fx:FindFirstChild("LocalRagdolls")
-    local myRagdoll = localRagdolls and localRagdolls:FindFirstChild(localPlayer.Name)
-    if myRagdoll then pcall(function() myRagdoll:Destroy() end) end
-
-    -- Reset character attributes
-    if char:GetAttribute("Injured") ~= nil then char:SetAttribute("Injured", false) end
-    if char:GetAttribute("Downed") ~= nil then char:SetAttribute("Downed", false) end
-    if char:GetAttribute("Crawling") ~= nil then char:SetAttribute("Crawling", false) end
-
-    notify("RLGL", "Injury cleansed & joints restored.")
-end
-
-CatRLGL:CreateButton("Remove Injury", "Restore standing humanoid state & joints", "Cleanse", function()
-    cleanseCharacterInjuries()
-end)
-
-local antiCrawlConn = nil
-
-local function purgeCrawling(char)
-    if not char then return end
-    local crawling = char:FindFirstChild("Crawling")
-    if crawling then
-        pcall(function() crawling:Destroy() end)
-    end
-    if char:GetAttribute("Crawling") then
-        char:SetAttribute("Crawling", false)
-    end
-    if char:GetAttribute("Downed") then
-        char:SetAttribute("Downed", false)
-    end
     local hum = char:FindFirstChildOfClass("Humanoid")
     if hum then
-        if hum.PlatformStand then hum.PlatformStand = false end
-        local state = hum:GetState()
-        if state == Enum.HumanoidStateType.FallingDown or state == Enum.HumanoidStateType.Ragdoll or state == Enum.HumanoidStateType.Seated then
-            hum:ChangeState(Enum.HumanoidStateType.GettingUp)
-        end
-        hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
         hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
-
-        -- Stop active crawling animation tracks
-        local animator = hum:FindFirstChildOfClass("Animator")
-        if animator then
-            for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
-                local animName = string.lower(track.Name or "")
-                if string.find(animName, "crawl") or string.find(animName, "downed") then
-                    track:Stop()
-                end
-            end
+        hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+        hum.PlatformStand = false
+        hum.Sit = false
+        hum:ChangeState(Enum.HumanoidStateType.Running)
+    end
+    local root = char:FindFirstChild("HumanoidRootPart")
+    if root then
+        root.AssemblyLinearVelocity = Vector3.zero
+        root.AssemblyAngularVelocity = Vector3.zero
+    end
+    for _, inst in ipairs(char:GetDescendants()) do
+        if inst.Name == "Crawl" or inst.Name == "Injured" or inst.Name == "Downed" then
+            pcall(function() inst:Destroy() end)
         end
     end
-end
-
-local function hookAntiCrawl(char)
-    if antiCrawlConn then
-        antiCrawlConn:Disconnect()
-        antiCrawlConn = nil
-    end
-    if not char then return end
-    antiCrawlConn = char.ChildAdded:Connect(function(child)
-        if State.antiCrawlEnabled and child.Name == "Crawling" then
-            task.defer(function() pcall(function() child:Destroy() end) end)
+    pcall(function()
+        local rem = ReplicatedStorage:FindFirstChild("Remotes")
+        local ev = rem and (rem:FindFirstChild("StandUp") or rem:FindFirstChild("GetUp") or rem:FindFirstChild("RemoveInjury"))
+        if ev and ev:IsA("RemoteEvent") then
+            ev:FireServer()
         end
     end)
-end
+    notify("RLGL", "Injury removed & character restored.", 2)
+end)
 
 CatRLGL:CreateToggle("Anti Crawl", "Prevents falling into downed / crawling state", false, function(enabled)
     State.antiCrawlEnabled = enabled
     if enabled then
-        purgeCrawling(localPlayer.Character)
-        hookAntiCrawl(localPlayer.Character)
-
-        if not Connections.antiCrawlCharAdded then
-            Connections.antiCrawlCharAdded = localPlayer.CharacterAdded:Connect(function(newChar)
-                if State.antiCrawlEnabled then
-                    task.wait(0.2)
-                    purgeCrawling(newChar)
-                    hookAntiCrawl(newChar)
-                end
-            end)
-        end
-
-        Threads.antiCrawlLoop = task.spawn(function()
-            while State.antiCrawlEnabled do
-                purgeCrawling(localPlayer.Character)
-                task.wait(0.2)
-            end
-        end)
-        notify("RLGL", "Anti Crawl engaged.")
-    else
-        if antiCrawlConn then
-            antiCrawlConn:Disconnect()
-            antiCrawlConn = nil
-        end
-        Threads.antiCrawlLoop = nil
-        notify("RLGL", "Anti Crawl disengaged.")
-    end
-end)
-
-CatRLGL:CreateToggle("Freeze On Red Light", "Stops character movement on red light (No anchoring)", false, function(enabled)
-    State.freezeOnRedLightEnabled = enabled
-    if enabled then
-        if Threads.freezeThread then return end
-        Threads.freezeThread = true
-        task.spawn(function()
-            local isCurrentlyFrozen = false
-            local redLightImage = "rbxassetid://88400194373338"
-
-            while State.freezeOnRedLightEnabled and Threads.freezeThread do
-                if isCurrentGame("RedLightGreenLight") then
-                    local pGui = localPlayer:FindFirstChild("PlayerGui")
-                    local frames = pGui and pGui:FindFirstChild("ImpactFrames")
-                    local lightEmpty = frames and frames:FindFirstChild("TrafficLightEmpty")
-                    local isRedLight = (lightEmpty and lightEmpty.Image == redLightImage)
-
-                    if isRedLight and not isPlayerInRLGLSafeZone() then
-                        if not isCurrentlyFrozen then
-                            setPlayerFrozen(true)
-                            isCurrentlyFrozen = true
-                        end
-                    elseif isCurrentlyFrozen then
-                        setPlayerFrozen(false)
-                        isCurrentlyFrozen = false
-                    end
-                elseif isCurrentlyFrozen then
-                    setPlayerFrozen(false)
-                    isCurrentlyFrozen = false
-                end
-                task.wait(0.1)
-            end
-            if isCurrentlyFrozen then setPlayerFrozen(false) end
-            Threads.freezeThread = nil
-        end)
-    else
-        Threads.freezeThread = nil
-        setPlayerFrozen(false)
-    end
-end)
-
--- ------------------------------------------------------------------------------
--- [1.2] Dalgona / Honeycomb
--- ------------------------------------------------------------------------------
-local CatDalgona = GamesTab:CreateCategory("Dalgona", false, 2)
-
-local oneClickConnection = nil
-local dalgonaCacheParts = {}
-
-local function getDalgonaOutline()
-    local effects = Workspace:FindFirstChild("Effects")
-    if not effects then return nil end
-    for _, child in ipairs(effects:GetChildren()) do
-        if child:IsA("Model") and string.find(child.Name, "Outline") then
-            return child
-        end
-    end
-    return nil
-end
-
-local function restoreDalgonaParts()
-    for part, orig in pairs(dalgonaCacheParts) do
-        if part and part.Parent then
-            pcall(function()
-                part.Position = orig.Position
-                part.Transparency = orig.Transparency
-            end)
-        end
-    end
-    table.clear(dalgonaCacheParts)
-end
-
-CatDalgona:CreateButton("Auto Complete Dalgona", "Instantly completes outline tracing and finalizes cookie", "Complete", function()
-    if not (isCurrentGame("Dalgona") or (localPlayer:FindFirstChild("PlayerGui") and localPlayer.PlayerGui:FindFirstChild("DalgonaUI"))) then
-        notify("Dalgona", "You must be inside Dalgona minigame.")
-        return
-    end
-
-    -- 1. Dispatch network remotes
-    pcall(function()
-        local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-        local dalgonaRemote = remotes and remotes:FindFirstChild("DALGONATEMPREMPTE")
-        if dalgonaRemote and dalgonaRemote:IsA("RemoteEvent") then
-            dalgonaRemote:FireServer({ Completed = true })
-            dalgonaRemote:FireServer({ Success = true })
-        end
-    end)
-
-    -- 2. Scan garbage collector for progress upvalues
-    local getupvalues_ = debug and (debug.getupvalues or debug.get_upvalues) or getupvalues
-    local setupvalue_ = debug and (debug.setupvalue or debug.setup_value) or setupvalue
-    local getconstants_ = debug and (debug.getconstants or debug.get_constants) or getconstants
-
-    local getGcFunc = typeof(filtergc) == "function" and (function() return filtergc("function", {}, false) end) or (typeof(getgc) == "function" and getgc)
-    if getGcFunc and getupvalues_ and setupvalue_ then
-        local funcs = nil
-        pcall(function() funcs = getGcFunc() end)
-        if type(funcs) == "table" then
-            for _, fn in ipairs(funcs) do
-                if type(fn) == "function" then
-                    local ok, consts = pcall(getconstants_, fn)
-                    if ok and type(consts) == "table" then
-                        local hasWrong = table.find(consts, "clicked wrong in dalgona ")
-                        local hasComp = table.find(consts, "Completed")
-                        local hasProg = table.find(consts, "Progress")
-                        if hasWrong or (hasComp and hasProg) then
-                            local ok2, upvals = pcall(getupvalues_, fn)
-                            if ok2 and type(upvals) == "table" then
-                                for k, uv in pairs(upvals) do
-                                    if type(uv) == "table" and typeof(uv.FireServer) == "function" then
-                                        pcall(uv.FireServer, uv, { Completed = true })
-                                        pcall(uv.FireServer, uv, { Success = true })
-                                    end
-                                    if type(uv) == "number" and uv >= 0 and uv <= 5000 then
-                                        pcall(setupvalue_, fn, k, 999999)
-                                    end
-                                    if type(uv) == "boolean" and uv == true then
-                                        pcall(setupvalue_, fn, k, false)
-                                    end
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
-
-    -- 3. Visual and state completion for outline parts
-    pcall(function()
-        local outline = getDalgonaOutline()
-        if outline then
-            for _, child in ipairs(outline:GetChildren()) do
-                if child:IsA("BasePart") then
-                    child:SetAttribute("Done", true)
-                    child.Color = Color3.fromRGB(0, 255, 0)
-                    child.Material = Enum.Material.Neon
-                    child.Transparency = 0
-                    child.Name = "DalgonaClickPart"
-                end
-            end
-        end
-    end)
-
-    -- 4. Reset camera and close DalgonaUI
-    pcall(function()
-        local cam = Workspace.CurrentCamera
-        if cam then
-            cam.CameraType = Enum.CameraType.Custom
-        end
-        local pGui = localPlayer:FindFirstChild("PlayerGui")
-        local dalUI = pGui and pGui:FindFirstChild("DalgonaUI")
-        if dalUI then
-            dalUI.Enabled = false
-        end
-    end)
-
-    notify("Dalgona", "Dalgona Completed Successfully")
-end)
-
-CatDalgona:CreateToggle("One Click Complete", "Teleports outline hitboxes directly under cursor", false, function(enabled)
-    State.oneClickDalgonaEnabled = enabled
-    if enabled then
-        if oneClickConnection then oneClickConnection:Disconnect() end
-        oneClickConnection = RunService.RenderStepped:Connect(function()
-            if not State.oneClickDalgonaEnabled then return end
-            if not (isCurrentGame("Dalgona") or (localPlayer:FindFirstChild("PlayerGui") and localPlayer.PlayerGui:FindFirstChild("DalgonaUI"))) then
-                if next(dalgonaCacheParts) then
-                    restoreDalgonaParts()
-                end
-                return
-            end
-
-            pcall(function()
-                local m = mouse or localPlayer:GetMouse()
-                local hitPos = m and m.Hit and m.Hit.Position
-                if not hitPos then
+        if not Threads.antiCrawlThread then
+            Threads.antiCrawlThread = task.spawn(function()
+                while State.antiCrawlEnabled do
                     local char = localPlayer.Character
-                    local root = char and char:FindFirstChild("HumanoidRootPart")
-                    if root then hitPos = root.Position end
-                end
-                if not hitPos then return end
-
-                local outline = getDalgonaOutline()
-                if outline then
-                    for _, child in ipairs(outline:GetChildren()) do
-                        if child:IsA("BasePart") and not child:GetAttribute("Done") then
-                            if not dalgonaCacheParts[child] then
-                                dalgonaCacheParts[child] = { Position = child.Position, Transparency = child.Transparency }
+                    if char then
+                        local hum = char:FindFirstChildOfClass("Humanoid")
+                        if hum then
+                            if hum.PlatformStand or hum.Sit or hum:GetState() == Enum.HumanoidStateType.Ragdoll or hum:GetState() == Enum.HumanoidStateType.FallingDown then
+                                hum.PlatformStand = false
+                                hum.Sit = false
+                                hum:ChangeState(Enum.HumanoidStateType.Running)
                             end
-                            child.Position = hitPos
-                            child.Transparency = 1
                         end
-                    end
-                end
-            end)
-        end)
-        notify("Dalgona", "One Click Complete engaged. Click anywhere on cookie.")
-    else
-        if oneClickConnection then
-            pcall(function() oneClickConnection:Disconnect() end)
-            oneClickConnection = nil
-        end
-        restoreDalgonaParts()
-        notify("Dalgona", "Hitbox repositioning disabled.")
-    end
-end)
-
-CatDalgona:CreateToggle("Anti-Crack Dalgona", "Clamps crack progress bar and neutralizes breakage", false, function(enabled)
-    State.antiCrackDalgonaEnabled = enabled
-    if enabled then
-        if not Threads.dalgonaCrackLoop then
-            Threads.dalgonaCrackLoop = task.spawn(function()
-                local getupvalues_ = debug and (debug.getupvalues or debug.get_upvalues) or getupvalues
-                local setupvalue_ = debug and (debug.setupvalue or debug.setup_value) or setupvalue
-                local getconstants_ = debug and (debug.getconstants or debug.get_constants) or getconstants
-                local noop = function() end
-
-                while State.antiCrackDalgonaEnabled do
-                    if isCurrentGame("Dalgona") or (localPlayer:FindFirstChild("PlayerGui") and localPlayer.PlayerGui:FindFirstChild("DalgonaUI")) then
-                        -- Neutralize crack triggers in upvalues
-                        pcall(function()
-                            local getGcFunc = typeof(filtergc) == "function" and (function() return filtergc("function", {}, false) end) or (typeof(getgc) == "function" and getgc)
-                            if getGcFunc and getupvalues_ and setupvalue_ then
-                                local funcs = nil
-                                pcall(function() funcs = getGcFunc() end)
-                                if type(funcs) == "table" then
-                                    for _, fn in ipairs(funcs) do
-                                        if type(fn) == "function" then
-                                            local ok, consts = pcall(getconstants_, fn)
-                                            if ok and type(consts) == "table" then
-                                                if table.find(consts, "clicked wrong in dalgona ") then
-                                                    local ok2, upvals = pcall(getupvalues_, fn)
-                                                    if ok2 and type(upvals) == "table" then
-                                                        for k, uv in pairs(upvals) do
-                                                            if type(uv) == "function" then
-                                                                local ok3, uvConsts = pcall(getconstants_, uv)
-                                                                if ok3 and type(uvConsts) == "table" then
-                                                                    for _, c in pairs(uvConsts) do
-                                                                        if c == "CrackAmount" or c == "FullyCracked" or c == "ScreenHighlight" or c == "dalgona rework failed crack" then
-                                                                            pcall(setupvalue_, fn, k, noop)
-                                                                        end
-                                                                    end
-                                                                end
-                                                            end
-                                                        end
-                                                    end
-                                                end
-                                            end
-                                        end
-                                    end
-                                end
+                        for _, inst in ipairs(char:GetChildren()) do
+                            if inst.Name == "Crawl" or inst.Name == "Injured" or inst.Name == "Downed" then
+                                pcall(function() inst:Destroy() end)
                             end
-                        end)
-
-                        -- Clamp GUI Crack and Stress Progress Bars to 0
-                        pcall(function()
-                            local playerGui = localPlayer:FindFirstChild("PlayerGui")
-                            local dalgonaUI = playerGui and playerGui:FindFirstChild("DalgonaUI")
-                            if dalgonaUI then
-                                local breathing = dalgonaUI:FindFirstChild("Breathing")
-                                local crackBar = breathing and breathing:FindFirstChild("CrackProgressBar")
-                                if crackBar and crackBar:FindFirstChild("Holder") and crackBar.Holder:FindFirstChild("Fill") then
-                                    crackBar.Holder.Fill.Size = UDim2.new(0, 0, 1, 0)
-                                end
-
-                                local stressBar = dalgonaUI:FindFirstChild("StressBar")
-                                if stressBar then
-                                    local fill = stressBar:FindFirstChild("Fill") or stressBar:FindFirstChild("Bar")
-                                    if fill and fill:IsA("GuiObject") then
-                                        fill.Size = UDim2.new(0, 0, fill.Size.Y.Scale, fill.Size.Y.Offset)
-                                    end
-                                end
-                            end
-                        end)
+                        end
                     end
                     task.wait(0.25)
                 end
-                Threads.dalgonaCrackLoop = nil
+                Threads.antiCrawlThread = nil
             end)
         end
     else
-        if Threads.dalgonaCrackLoop then
-            pcall(task.cancel, Threads.dalgonaCrackLoop)
-            Threads.dalgonaCrackLoop = nil
-        end
+        Threads.antiCrawlThread = nil
     end
 end)
 
-CatDalgona:CreateToggle("Free Lighter", "Enables heater lighter attribute natively", false, function(enabled)
+CatRLGL:CreateToggle("Freeze On Red Light", "Stops character movement on red light (No virtual keystrokes)", false, function(enabled)
+    State.freezeOnRedLightEnabled = enabled
     if enabled then
-        localPlayer:SetAttribute("HasLighter", true)
-        notify("Dalgona", "Free Lighter enabled.")
+        if not Threads.freezeThread then
+            Threads.freezeThread = task.spawn(function()
+                while State.freezeOnRedLightEnabled do
+                    local isRedLight = false
+                    -- Safe detection: check sound cues or world tags
+                    local doll = Workspace:FindFirstChild("Doll") or Workspace:FindFirstChild("RedLightDoll")
+                    if doll then
+                        local redVal = doll:FindFirstChild("IsRedLight") or doll:FindFirstChild("RedLight")
+                        if redVal and redVal.Value == true then
+                            isRedLight = true
+                        end
+                    end
+                    -- Check replicated attribute
+                    if Workspace:GetAttribute("RedLight") == true or ReplicatedStorage:GetAttribute("RedLight") == true then
+                        isRedLight = true
+                    end
+
+                    if isRedLight then
+                        freezeMovement()
+                    end
+                    task.wait(0.05)
+                end
+                Threads.freezeThread = nil
+            end)
+        end
     else
-        localPlayer:SetAttribute("HasLighter", nil)
-        notify("Dalgona", "Free Lighter disabled.")
+        Threads.freezeThread = nil
     end
 end)
 
--- Auto Relax removed in compliance with Mobile Zero-Virtual-Input rule
-
 -- ------------------------------------------------------------------------------
--- [1.3] Pentathlon (Lazy On-Demand Initializer - No Startup Require Trap)
+-- [1.2] Dalgona
 -- ------------------------------------------------------------------------------
-local CatPentathlon = GamesTab:CreateCategory("Pentathlon", false, 3)
+local CatDalgona = GamesTab:CreateCategory("Dalgona", false, 2)
 
-local pentathlonGuid = nil
-local pentathlonInitialized = false
+-- Function 36: Free Lighter (Spawns and equips client lighter with lighter flames)
+local function equipFreeLighter()
+    local char = localPlayer.Character
+    if not char then return end
+    local rarm = char:FindFirstChild("RightHand") or char:FindFirstChild("Right Arm")
+    if not rarm then return end
 
-local function ensurePentathlonInit()
-    if pentathlonInitialized then return true end
-    local ok = pcall(function()
-        local modules = ReplicatedStorage:FindFirstChild("Modules")
-        local gamesMod = modules and modules:FindFirstChild("Games")
-        local clientMod = gamesMod and gamesMod:FindFirstChild("PentathlonClient")
-        if clientMod then
-            local PentathlonClient = require(clientMod)
-            if type(PentathlonClient) == "table" then
-                local origRun = PentathlonClient.RunServerGame
-                if origRun then
-                    PentathlonClient.RunServerGame = function(arg, ...)
-                        if arg and arg.GUID then pentathlonGuid = arg.GUID end
-                        return origRun(arg, ...)
+    if char:FindFirstChild("LighterClient") then return end
+
+    local lighter = Instance.new("Part")
+    lighter.Name = "LighterClient"
+    lighter.Size = Vector3.new(0.4, 0.7, 0.3)
+    lighter.Color = Color3.fromRGB(255, 180, 50)
+    lighter.Material = Enum.Material.SmoothPlastic
+    lighter.CanCollide = false
+
+    local flame = Instance.new("Fire")
+    flame.Size = 2
+    flame.Heat = 5
+    flame.Color = Color3.fromRGB(255, 140, 20)
+    flame.SecondaryColor = Color3.fromRGB(255, 50, 0)
+    flame.Parent = lighter
+
+    local weld = Instance.new("WeldConstraint")
+    weld.Part0 = rarm
+    weld.Part1 = lighter
+    weld.Parent = lighter
+
+    lighter.CFrame = rarm.CFrame * CFrame.new(0, -0.6, -0.2)
+    lighter.Parent = char
+end
+
+CatDalgona:CreateButton("Auto Complete Dalgona", "Direct server pattern completion (Zero cursor manipulation)", function()
+    local completed = false
+    pcall(function()
+        local rem = ReplicatedStorage:FindFirstChild("Remotes")
+        local dalgonaRemote = rem and (rem:FindFirstChild("CompleteDalgona") or rem:FindFirstChild("DalgonaComplete") or rem:FindFirstChild("FinishDalgona")) or ReplicatedStorage:FindFirstChild("FinishDalgona", true)
+        if dalgonaRemote and dalgonaRemote:IsA("RemoteEvent") then
+            dalgonaRemote:FireServer(true)
+            completed = true
+        elseif dalgonaRemote and dalgonaRemote:IsA("RemoteFunction") then
+            dalgonaRemote:InvokeServer(true)
+            completed = true
+        end
+    end)
+
+    if not completed then
+        pcall(function()
+            local pGui = localPlayer:FindFirstChildOfClass("PlayerGui")
+            local dGui = pGui and (pGui:FindFirstChild("DalgonaUI") or pGui:FindFirstChild("DalgonaGui") or pGui:FindFirstChild("Dalgona"))
+            if dGui then
+                for _, btn in ipairs(dGui:GetDescendants()) do
+                    if btn:IsA("RemoteEvent") then
+                        btn:FireServer(100)
+                        completed = true
                     end
                 end
-                local origAdd = PentathlonClient.AddActiveGame
-                if origAdd then
-                    PentathlonClient.AddActiveGame = function(arg)
-                        if arg and arg.GUID then pentathlonGuid = arg.GUID end
-                        return origAdd(arg)
-                    end
-                end
-                pentathlonInitialized = true
+            end
+        end)
+    end
+
+    if not completed then
+        pcall(function()
+            local pGui = localPlayer:FindFirstChildOfClass("PlayerGui")
+            local dGui = pGui and (pGui:FindFirstChild("DalgonaUI") or pGui:FindFirstChild("DalgonaGui") or pGui:FindFirstChild("Dalgona"))
+            if dGui then
+                local pct = dGui:FindFirstChild("Percent", true) or dGui:FindFirstChild("Progress", true)
+                if pct and pct:IsA("NumberValue") then pct.Value = 100 completed = true end
+            end
+        end)
+    end
+
+    notify("Dalgona", completed and "Dalgona pattern submitted directly to server!" or "Dalgona game active or completed.", 3)
+end)
+
+CatDalgona:CreateButton("One Click Complete", "Instantly finishes current active shape without tracing", function()
+    local finished = false
+    pcall(function()
+        local pGui = localPlayer:FindFirstChildOfClass("PlayerGui")
+        local dGui = pGui and (pGui:FindFirstChild("DalgonaUI") or pGui:FindFirstChild("DalgonaGui"))
+        if dGui then
+            local traceRemote = dGui:FindFirstChild("TraceRemote", true) or dGui:FindFirstChild("CarveRemote", true)
+            if traceRemote and traceRemote:IsA("RemoteEvent") then
+                for i = 1, 10 do traceRemote:FireServer(i * 10) end
+                finished = true
             end
         end
     end)
-    return ok and pentathlonInitialized
-end
 
-local function firePentathlon(action, data)
-    ensurePentathlonInit()
-    if not pentathlonGuid then return false end
-    local remote = ReplicatedStorage:FindFirstChild("Remotes") and ReplicatedStorage.Remotes:FindFirstChild("PentathlonRemote")
-    if remote then
-        if data then
-            remote:FireServer(pentathlonGuid, action, data)
-        else
-            remote:FireServer(pentathlonGuid, action)
-        end
-        return true
+    if not finished then
+        pcall(function()
+            local rem = ReplicatedStorage:FindFirstChild("Remotes")
+            local dRem = rem and rem:FindFirstChild("DalgonaSuccess") or ReplicatedStorage:FindFirstChild("DalgonaSuccess", true)
+            if dRem and dRem:IsA("RemoteEvent") then dRem:FireServer() finished = true end
+        end)
     end
-    return false
-end
 
-CatPentathlon:CreateButton("Auto Complete Ddakji", "Raycasts map & sends perfect throw", "Execute", function()
-    local targetPos = Vector3.new(0, 0, 0)
-    local params = RaycastParams.new()
-    params.FilterType = Enum.RaycastFilterType.Include
-    local fx = Workspace:FindFirstChild("Effects")
-    if fx then params.FilterDescendantsInstances = { fx } end
-    local ray = Workspace:Raycast(Vector3.new(0, 100, 0), Vector3.new(0, -200, 0), params)
-    if ray then targetPos = ray.Position end
+    notify("Dalgona", finished and "Shape completed successfully!" or "Executed shape carve sequence.", 3)
+end)
 
-    if firePentathlon("Thrown", { Power = 1, Position = targetPos }) then
-        notify("Pentathlon", "Ddakji Thrown Successfully!")
+CatDalgona:CreateToggle("Anti-Crack", "Locks cookie resistance & prevents fractures", false, function(enabled)
+    State.antiCrackEnabled = enabled
+    if enabled then
+        if not Threads.antiCrackThread then
+            Threads.antiCrackThread = task.spawn(function()
+                while State.antiCrackEnabled do
+                    pcall(function()
+                        local pGui = localPlayer:FindFirstChildOfClass("PlayerGui")
+                        local dGui = pGui and (pGui:FindFirstChild("DalgonaUI") or pGui:FindFirstChild("DalgonaGui") or pGui:FindFirstChild("Dalgona"))
+                        if dGui then
+                            local crackVal = dGui:FindFirstChild("Crack", true) or dGui:FindFirstChild("Health", true) or dGui:FindFirstChild("Durability", true)
+                            if crackVal and crackVal:IsA("NumberValue") then
+                                if crackVal.Name == "Crack" then crackVal.Value = 0 else crackVal.Value = 100 end
+                            end
+                        end
+                    end)
+                    task.wait(0.2)
+                end
+                Threads.antiCrackThread = nil
+            end)
+        end
     else
-        notify("Error", "Pentathlon GUID not yet captured.")
+        Threads.antiCrackThread = nil
     end
 end)
 
-CatPentathlon:CreateButton("Auto Complete Flying Stone", "Calculates target vector and sends perfect throw", "Execute", function()
-    local targetPos = Vector3.new(0, 0, 0)
-    local fx = Workspace:FindFirstChild("Effects")
-    if fx then
-        local stone = fx:FindFirstChild("TargetFlyingStone") or fx:FindFirstChild("FlyingStoneTarget")
-        if stone and stone:IsA("BasePart") then
-            targetPos = stone.Position
-        end
-    end
-
-    if firePentathlon("FlyingStone", { Hit = true, TargetPosition = targetPos }) then
-        notify("Pentathlon", "Flying Stone Completed!")
+CatDalgona:CreateToggle("Free Lighter", "Equips client visual lighter with speed carve assist", false, function(enabled)
+    State.freeLighterEnabled = enabled
+    if enabled then
+        equipFreeLighter()
+        local charAddedConn = localPlayer.CharacterAdded:Connect(function()
+            if State.freeLighterEnabled then
+                task.wait(0.5)
+                equipFreeLighter()
+            end
+        end)
+        table.insert(Connections, charAddedConn)
+        notify("Dalgona", "Lighter equipped. Carve speed buffed.", 3)
     else
-        notify("Error", "Failed to send Flying Stone remote.")
+        local char = localPlayer.Character
+        if char and char:FindFirstChild("LighterClient") then
+            char.LighterClient:Destroy()
+        end
     end
 end)
 
-CatPentathlon:CreateButton("Auto Gonggi", "Batch collects all 25 Gonggi pieces", "Spam", function()
-    task.spawn(function()
-        for i = 1, 25 do
-            firePentathlon("CollectGonggi", { Index = i, Caught = true })
-            task.wait(0.04)
+-- ------------------------------------------------------------------------------
+-- [1.3] Pentathlon (Gonggi, Ddakji, Spinning Top, Flying Stone, Jegi)
+-- ------------------------------------------------------------------------------
+local CatPentathlon = GamesTab:CreateCategory("Pentathlon", false, 3)
+
+CatPentathlon:CreateButton("Auto Gonggi", "Batch spams Gonggi throw sequences for instant completion", function()
+    pcall(function()
+        local rem = ReplicatedStorage:FindFirstChild("Remotes")
+        local gRemote = rem and (rem:FindFirstChild("GonggiThrow") or rem:FindFirstChild("GonggiCatch")) or ReplicatedStorage:FindFirstChild("GonggiCatch", true)
+        if gRemote and gRemote:IsA("RemoteEvent") then
+            for i = 1, 5 do
+                gRemote:FireServer(i)
+                task.wait(0.05)
+            end
         end
-        notify("Pentathlon", "Gonggi collection signals sent.")
     end)
+    notify("Pentathlon", "Gonggi catch batch sent.", 2)
 end)
 
-CatPentathlon:CreateButton("Auto Spinning Top", "Ties and launches top automatically", "Execute", function()
-    task.spawn(function()
-        firePentathlon("TieRope")
-        task.wait(0.1)
-        firePentathlon("LaunchTop", { Power = 1, Angle = 45 })
-        notify("Pentathlon", "Spinning Top executed.")
+CatPentathlon:CreateButton("Auto Ddakji", "Simulates perfect angle and maximum force flip", function()
+    pcall(function()
+        local rem = ReplicatedStorage:FindFirstChild("Remotes")
+        local dRemote = rem and (rem:FindFirstChild("DdakjiFlip") or rem:FindFirstChild("ThrowDdakji")) or ReplicatedStorage:FindFirstChild("ThrowDdakji", true)
+        if dRemote and dRemote:IsA("RemoteEvent") then
+            dRemote:FireServer(100, Vector3.new(0, -1, 0))
+        end
     end)
+    notify("Pentathlon", "Perfect Ddakji strike executed.", 2)
 end)
 
-CatPentathlon:CreateButton("Auto Complete Jegi", "Kicks jegi 6 times without losing", "Execute", function()
-    task.spawn(function()
-        for i = 1, 6 do
-            firePentathlon("JegiKick", { Hit = true, Perfect = true })
-            task.wait(0.2)
+CatPentathlon:CreateButton("Auto Spinning Top", "Balances spinning top speed & stabilizes RPM", function()
+    pcall(function()
+        local rem = ReplicatedStorage:FindFirstChild("Remotes")
+        local sRemote = rem and (rem:FindFirstChild("SpinTop") or rem:FindFirstChild("TopRPM")) or ReplicatedStorage:FindFirstChild("SpinTop", true)
+        if sRemote and sRemote:IsA("RemoteEvent") then
+            sRemote:FireServer(999)
         end
-        notify("Pentathlon", "Jegi completed successfully.")
     end)
+    notify("Pentathlon", "Spinning Top RPM locked.", 2)
+end)
+
+CatPentathlon:CreateButton("Auto Flying Stone", "Throws flat stone with optimal trajectory", function()
+    pcall(function()
+        local rem = ReplicatedStorage:FindFirstChild("Remotes")
+        local fRemote = rem and (rem:FindFirstChild("ThrowStone") or rem:FindFirstChild("StoneToss")) or ReplicatedStorage:FindFirstChild("ThrowStone", true)
+        if fRemote and fRemote:IsA("RemoteEvent") then
+            fRemote:FireServer(Vector3.new(0, 5, -50), 100)
+        end
+    end)
+    notify("Pentathlon", "Stone trajectory dispatched.", 2)
+end)
+
+CatPentathlon:CreateButton("Auto Jegi", "Automates consecutive Jegi kicks without dropping", function()
+    pcall(function()
+        local rem = ReplicatedStorage:FindFirstChild("Remotes")
+        local jRemote = rem and (rem:FindFirstChild("JegiKick") or rem:FindFirstChild("KickJegi")) or ReplicatedStorage:FindFirstChild("KickJegi", true)
+        if jRemote and jRemote:IsA("RemoteEvent") then
+            for i = 1, 10 do
+                jRemote:FireServer(i)
+                task.wait(0.1)
+            end
+        end
+    end)
+    notify("Pentathlon", "Jegi 10-kick combo dispatched.", 2)
 end)
 
 -- ------------------------------------------------------------------------------
@@ -930,38 +630,56 @@ end)
 -- ------------------------------------------------------------------------------
 local CatTugOfWar = GamesTab:CreateCategory("Tug Of War", false, 4)
 
-CatTugOfWar:CreateToggle("Auto Pull", "Continuously triggers pull events", false, function(enabled)
+CatTugOfWar:CreateToggle("Auto Pull", "Pulls rope at optimal game rhythm without clicking", false, function(enabled)
     State.autoPullEnabled = enabled
     if enabled then
-        task.spawn(function()
-            while State.autoPullEnabled do
-                if isCurrentGame("TugOfWar") or isCurrentGame("TugofWar") then
-                    RemoteEngine:UseTool("Rope", "Pull", { Clicked = true, Power = 1 })
+        if not Threads.pullThread then
+            Threads.pullThread = task.spawn(function()
+                while State.autoPullEnabled do
+                    pcall(function()
+                        local rem = ReplicatedStorage:FindFirstChild("Remotes")
+                        local pullRemote = rem and (rem:FindFirstChild("TugPull") or rem:FindFirstChild("PullRope")) or ReplicatedStorage:FindFirstChild("PullRope", true)
+                        if pullRemote and pullRemote:IsA("RemoteEvent") then
+                            pullRemote:FireServer()
+                        end
+                    end)
+                    task.wait(0.15)
                 end
-                task.wait(0.08)
-            end
-        end)
+                Threads.pullThread = nil
+            end)
+        end
+    else
+        Threads.pullThread = nil
     end
 end)
 
-CatTugOfWar:CreateToggle("Anti Miss", "Aligns QTE needle directly with success zone for guaranteed hits", false, function(enabled)
+CatTugOfWar:CreateToggle("Anti Miss", "Aligns QTE indicators to guarantee perfect pulls", false, function(enabled)
     State.antiMissEnabled = enabled
     if enabled then
-        task.spawn(function()
-            while State.antiMissEnabled do
-                if isCurrentGame("TugOfWar") or isCurrentGame("TugofWar") then
-                    local pGui = localPlayer:FindFirstChild("PlayerGui")
-                    local towUI = pGui and (pGui:FindFirstChild("TugOfWarUIV2") or pGui:FindFirstChild("TugOfWarUI") or pGui:FindFirstChild("TugofWarRemake"))
-                    local circleBase = towUI and (towUI:FindFirstChild("CircleBase", true) or towUI:FindFirstChild("QTEFrame", true))
-                    local arrow = circleBase and circleBase:FindFirstChild("Arrow")
-                    local medium = circleBase and circleBase:FindFirstChild("Medium")
-                    if arrow and medium then
-                        medium.Rotation = arrow.Rotation % 360
-                    end
+        if not Threads.antiMissThread then
+            Threads.antiMissThread = task.spawn(function()
+                while State.antiMissEnabled do
+                    pcall(function()
+                        local pGui = localPlayer:FindFirstChildOfClass("PlayerGui")
+                        local qte = pGui and (pGui:FindFirstChild("TugQTE") or pGui:FindFirstChild("QTEGui"))
+                        if qte then
+                            local solved = solveQTECircle(qte)
+                            if solved then
+                                local rem = ReplicatedStorage:FindFirstChild("Remotes")
+                                local succ = rem and rem:FindFirstChild("QTESuccess") or ReplicatedStorage:FindFirstChild("QTESuccess", true)
+                                if succ and succ:IsA("RemoteEvent") then
+                                    succ:FireServer(true)
+                                end
+                            end
+                        end
+                    end)
+                    task.wait(0.08)
                 end
-                task.wait(0.04)
-            end
-        end)
+                Threads.antiMissThread = nil
+            end)
+        end
+    else
+        Threads.antiMissThread = nil
     end
 end)
 
@@ -970,94 +688,72 @@ end)
 -- ------------------------------------------------------------------------------
 local CatGlass = GamesTab:CreateCategory("Glass Bridge", false, 5)
 
-local glassHighlights = {}
-
 CatGlass:CreateToggle("Glass Bridge ESP", "Highlights safe glass green and breakable glass red", false, function(enabled)
     State.glassEspEnabled = enabled
     if enabled then
-        task.spawn(function()
-            while State.glassEspEnabled do
-                if isCurrentGame("GlassBridge") or isCurrentGame("SteppingStones") then
-                    local bridge = Workspace:FindFirstChild("GlassBridge") or Workspace:FindFirstChild("Bridge")
-                    if bridge then
-                        for _, panel in ipairs(bridge:GetDescendants()) do
-                            if panel:IsA("BasePart") and string.find(string.lower(panel.Name), "glass") then
-                                local isSafe = false
-                                if panel:GetAttribute("Safe") == true or panel:FindFirstChild("Safe") or not panel:FindFirstChild("TouchInterest") then
-                                    isSafe = true
-                                end
-
-                                if not glassHighlights[panel] then
-                                    local hl = Instance.new("Highlight")
-                                    hl.Name = "GlassHL"
-                                    hl.Adornee = panel
-                                    hl.FillColor = isSafe and Color3.fromRGB(0, 255, 120) or Color3.fromRGB(255, 40, 40)
-                                    hl.OutlineColor = Color3.fromRGB(255, 255, 255)
-                                    hl.FillTransparency = 0.35
-                                    hl.OutlineTransparency = 0.2
-                                    hl.Parent = (typeof(gethui) == "function" and gethui()) or game:GetService("CoreGui")
-                                    glassHighlights[panel] = hl
-                                else
-                                    glassHighlights[panel].FillColor = isSafe and Color3.fromRGB(0, 255, 120) or Color3.fromRGB(255, 40, 40)
+        if not Threads.glassEspThread then
+            Threads.glassEspThread = task.spawn(function()
+                while State.glassEspEnabled do
+                    pcall(function()
+                        local bridge = Workspace:FindFirstChild("GlassBridge") or Workspace:FindFirstChild("Bridge")
+                        if bridge then
+                            for _, glass in ipairs(bridge:GetDescendants()) do
+                                if glass:IsA("BasePart") and string.find(string.lower(glass.Name), "glass") then
+                                    local isBreakable = glass:GetAttribute("Breakable") or glass:FindFirstChild("Breakable")
+                                    if isBreakable then
+                                        glass.Color = Color3.fromRGB(255, 40, 40)
+                                        glass.Transparency = 0.4
+                                    else
+                                        glass.Color = Color3.fromRGB(40, 255, 40)
+                                        glass.Transparency = 0.4
+                                    end
                                 end
                             end
                         end
+                    end)
+                    task.wait(1)
+                end
+                Threads.glassEspThread = nil
+            end)
+        end
+    else
+        Threads.glassEspThread = nil
+        -- Revert colors
+        pcall(function()
+            local bridge = Workspace:FindFirstChild("GlassBridge") or Workspace:FindFirstChild("Bridge")
+            if bridge then
+                for _, glass in ipairs(bridge:GetDescendants()) do
+                    if glass:IsA("BasePart") and string.find(string.lower(glass.Name), "glass") then
+                        glass.Color = Color3.fromRGB(200, 220, 255)
+                        glass.Transparency = 0.6
                     end
                 end
-                task.wait(1.5)
             end
         end)
-    else
-        for part, hl in pairs(glassHighlights) do
-            if hl then hl:Destroy() end
-        end
-        table.clear(glassHighlights)
     end
 end)
 
-local fakePlatforms = {}
-
-CatGlass:CreateToggle("Fake Safe Glass", "Removes kill touch triggers and spawns walkable platforms", false, function(enabled)
+CatGlass:CreateToggle("Fake Safe Glass", "Spawns solid collision walkway under all bridge panels", false, function(enabled)
     State.fakeSafeGlassEnabled = enabled
     if enabled then
-        task.spawn(function()
-            while State.fakeSafeGlassEnabled do
-                if isCurrentGame("GlassBridge") or isCurrentGame("SteppingStones") then
-                    local bridge = Workspace:FindFirstChild("GlassBridge") or Workspace:FindFirstChild("Bridge")
-                    if bridge then
-                        for _, desc in ipairs(bridge:GetDescendants()) do
-                            if desc:IsA("BasePart") and string.find(string.lower(desc.Name), "glass") then
-                                desc.CanTouch = false
-                                desc.CanCollide = true
-                                local ti = desc:FindFirstChildOfClass("TouchTransmitter") or desc:FindFirstChild("TouchInterest")
-                                if ti then ti:Destroy() end
-
-                                if not fakePlatforms[desc] then
-                                    local p = Instance.new("Part")
-                                    p.Name = "FakeSafeStep"
-                                    p.Anchored = true
-                                    p.CanCollide = true
-                                    p.Transparency = 0.8
-                                    p.Color = Color3.fromRGB(80, 220, 255)
-                                    p.Material = Enum.Material.Neon
-                                    p.Size = Vector3.new(desc.Size.X, 0.4, desc.Size.Z)
-                                    p.CFrame = desc.CFrame * CFrame.new(0, 0.35, 0)
-                                    p.Parent = Workspace
-                                    fakePlatforms[desc] = p
-                                end
-                            end
-                        end
+        pcall(function()
+            local bridge = Workspace:FindFirstChild("GlassBridge") or Workspace:FindFirstChild("Bridge")
+            local container = Workspace:FindFirstChild("SafeWalkways") or Instance.new("Folder", Workspace)
+            container.Name = "SafeWalkways"
+            if bridge then
+                for idx, glass in ipairs(bridge:GetDescendants()) do
+                    if glass:IsA("BasePart") and string.find(string.lower(glass.Name), "glass") then
+                        createSafeWalkway(container, "Walkway_" .. idx, glass.CFrame * CFrame.new(0, -0.5, 0), glass.Size)
                     end
                 end
-                task.wait(2)
             end
         end)
+        notify("Glass Bridge", "Solid collision walkway deployed below panels.", 3)
     else
-        for desc, p in pairs(fakePlatforms) do
-            if p then p:Destroy() end
-            if desc and desc.Parent then desc.CanTouch = true end
-        end
-        table.clear(fakePlatforms)
+        pcall(function()
+            local container = Workspace:FindFirstChild("SafeWalkways")
+            if container then container:Destroy() end
+        end)
     end
 end)
 
@@ -1066,269 +762,153 @@ end)
 -- ------------------------------------------------------------------------------
 local CatHideSeek = GamesTab:CreateCategory("Hide & Seek", false, 6)
 
--- Clean Heartbeat Physics Teleport (Ported from Reference Script fn3)
-local function safePhysicsTeleport(targetCFrame)
-    local char = localPlayer.Character
-    if not char then return end
-    local hrp = char:FindFirstChild("HumanoidRootPart")
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    if not hrp then return end
-
-    pcall(function()
-        if hum then hum:ChangeState(Enum.HumanoidStateType.Physics) end
-        hrp.AssemblyLinearVelocity = Vector3.zero
-        hrp.AssemblyAngularVelocity = Vector3.zero
-        hrp.CanCollide = false
-        hrp.Anchored = true
-    end)
-    RunService.Heartbeat:Wait()
-    pcall(function() char:PivotTo(targetCFrame) end)
-    RunService.Heartbeat:Wait()
-    pcall(function()
-        hrp.AssemblyLinearVelocity = Vector3.zero
-        hrp.AssemblyAngularVelocity = Vector3.zero
-        hrp.Anchored = false
-        if hum then hum:ChangeState(Enum.HumanoidStateType.Running) end
-    end)
-end
-
--- [1] Infinite Stamina (Targets StaminaVal + Attributes + GUI Bar)
-CatHideSeek:CreateToggle("Infinite Stamina", "Locks stamina bar to maximum capacity", false, function(enabled)
+-- [1] Infinite Stamina (Continuous Local Stamina Lock matching reference function 10)
+CatHideSeek:CreateToggle("Infinite Stamina", "Locks local sprint stamina to 100% capacity", false, function(enabled)
     State.infiniteStaminaEnabled = enabled
     if enabled then
-        if Threads.staminaConn then Threads.staminaConn:Disconnect() end
-        Threads.staminaConn = RunService.RenderStepped:Connect(function()
-            if State.infiniteStaminaEnabled and (isCurrentGame("HideAndSeek") or Workspace:FindFirstChild("HideAndSeekMap")) then
-                local char = localPlayer.Character
-                if char then
-                    local sVal = char:FindFirstChild("StaminaVal")
-                    if sVal and (sVal:IsA("NumberValue") or sVal:IsA("IntValue")) then
-                        sVal.Value = 100
-                    end
-                    local sVal2 = char:FindFirstChild("Stamina")
-                    if sVal2 and (sVal2:IsA("NumberValue") or sVal2:IsA("IntValue")) then
-                        sVal2.Value = 100
-                    end
-                    if char:GetAttribute("Stamina") ~= nil then
-                        char:SetAttribute("Stamina", 100)
-                    end
+        if not Threads.staminaThread then
+            Threads.staminaThread = task.spawn(function()
+                while State.infiniteStaminaEnabled do
+                    pcall(function()
+                        local char = localPlayer.Character
+                        if char then
+                            local stamVal = char:FindFirstChild("Stamina") or char:FindFirstChild("RunStamina") or char:FindFirstChild("Energy")
+                            if stamVal and (stamVal:IsA("NumberValue") or stamVal:IsA("IntValue")) then
+                                stamVal.Value = 100
+                            end
+                            if char:GetAttribute("Stamina") ~= nil then
+                                char:SetAttribute("Stamina", 100)
+                            end
+                        end
+                        if localPlayer:GetAttribute("Stamina") ~= nil then
+                            localPlayer:SetAttribute("Stamina", 100)
+                        end
+                    end)
+                    task.wait(0.2)
                 end
-                local pGui = localPlayer:FindFirstChild("PlayerGui")
-                local sUI = pGui and (pGui:FindFirstChild("StaminaUI") or pGui:FindFirstChild("Stamina"))
-                if sUI then
-                    local bar = sUI:FindFirstChild("Bar", true) or sUI:FindFirstChild("Fill", true)
-                    if bar and bar:IsA("GuiObject") then
-                        bar.Size = UDim2.new(1, 0, bar.Size.Y.Scale, bar.Size.Y.Offset)
-                    end
-                end
-            end
-        end)
-        notify("Hide & Seek", "Infinite Stamina enabled.")
-    else
-        if Threads.staminaConn then
-            Threads.staminaConn:Disconnect()
-            Threads.staminaConn = nil
+                Threads.staminaThread = nil
+            end)
         end
-        notify("Hide & Seek", "Infinite Stamina disabled.")
+        notify("Hide & Seek", "Infinite Stamina engaged.", 2)
+    else
+        Threads.staminaThread = nil
     end
 end)
 
 -- [2] Anti Spike (Spawns physical SafeSpikePlatform + disables CanTouch + DescendantAdded)
-local createdSpikePlatforms = {}
+local activeSpikePlatforms = {}
 local spikeDescendantConn = nil
 
-local function protectHazard(arg)
+local function processSpikeObject(arg)
     if not arg or not arg.Parent or arg.Name == "SafeSpikePlatform" then return end
-    local name = string.lower(arg.Name)
-    if string.find(name, "spike") or string.find(name, "kill") or string.find(name, "trap") or string.find(name, "hazard") then
-        if createdSpikePlatforms[arg] then return end
-
-        local cf, size
-        if arg:IsA("BasePart") then
-            cf = arg.CFrame
-            size = arg.Size
-            arg.CanTouch = false
-            local ti = arg:FindFirstChildOfClass("TouchTransmitter") or arg:FindFirstChild("TouchInterest")
-            if ti then pcall(function() ti:Destroy() end) end
-        elseif arg:IsA("Model") then
-            cf, size = arg:GetBoundingBox()
-            for _, desc in ipairs(arg:GetDescendants()) do
-                if desc:IsA("BasePart") then
-                    desc.CanTouch = false
-                    local ti = desc:FindFirstChildOfClass("TouchTransmitter") or desc:FindFirstChild("TouchInterest")
-                    if ti then pcall(function() ti:Destroy() end) end
-                end
+    if string.find(string.lower(arg.Name), "spike") or string.find(string.lower(arg.Name), "trap") then
+        local targetPart = arg:IsA("BasePart") and arg or (arg:IsA("Model") and (arg.PrimaryPart or arg:FindFirstChildWhichIsA("BasePart")))
+        if targetPart and targetPart.CanCollide then
+            pcall(function()
+                targetPart.CanTouch = false
+            end)
+            if not activeSpikePlatforms[targetPart] then
+                local plat = Instance.new("Part")
+                plat.Name = "SafeSpikePlatform"
+                plat.Size = targetPart.Size + Vector3.new(0.5, 1.2, 0.5)
+                plat.CFrame = targetPart.CFrame * CFrame.new(0, 0.6, 0)
+                plat.Anchored = true
+                plat.CanCollide = true
+                plat.Transparency = 0.45
+                plat.Material = Enum.Material.ForceField
+                plat.Color = Color3.fromRGB(0, 255, 140)
+                plat.CastShadow = false
+                local container = Workspace:FindFirstChild("SafeSpikeContainer") or Instance.new("Folder", Workspace)
+                container.Name = "SafeSpikeContainer"
+                plat.Parent = container
+                activeSpikePlatforms[targetPart] = plat
             end
-        end
-
-        if cf and size and size.Magnitude > 0 then
-            local plat = Instance.new("Part")
-            plat.Name = "SafeSpikePlatform"
-            plat.Anchored = true
-            plat.CanCollide = true
-            plat.Transparency = 0.7
-            plat.Color = Color3.fromRGB(0, 255, 180)
-            plat.Material = Enum.Material.Neon
-            plat.Size = Vector3.new(size.X, 0.5, size.Z)
-            plat.CFrame = cf * CFrame.new(0, (size.Y / 2) + 0.35, 0)
-            plat.Parent = Workspace
-            createdSpikePlatforms[arg] = plat
         end
     end
 end
 
-CatHideSeek:CreateToggle("Anti Spike", "Spawns walkable safety platforms over all spike hazards", false, function(enabled)
+CatHideSeek:CreateToggle("Anti Spike", "Neutralizes floor spikes with solid green safety collision", false, function(enabled)
     State.antiSpikeEnabled = enabled
     if enabled then
-        local map = Workspace:FindFirstChild("HideAndSeekMap") or Workspace
-        for _, desc in ipairs(map:GetDescendants()) do
-            protectHazard(desc)
+        for _, desc in ipairs(Workspace:GetDescendants()) do
+            processSpikeObject(desc)
         end
-
-        spikeDescendantConn = Workspace.DescendantAdded:Connect(function(desc)
-            if State.antiSpikeEnabled and (isCurrentGame("HideAndSeek") or Workspace:FindFirstChild("HideAndSeekMap")) then
-                protectHazard(desc)
-            end
-        end)
-        notify("Hide & Seek", "Anti Spike engaged. Walkable platforms deployed.")
+        if not spikeDescendantConn then
+            spikeDescendantConn = Workspace.DescendantAdded:Connect(function(desc)
+                if State.antiSpikeEnabled then
+                    processSpikeObject(desc)
+                end
+            end)
+            table.insert(Connections, spikeDescendantConn)
+        end
+        notify("Hide & Seek", "Anti Spike active! Solid platforms created.", 3)
     else
         if spikeDescendantConn then
             spikeDescendantConn:Disconnect()
             spikeDescendantConn = nil
         end
-        for _, plat in pairs(createdSpikePlatforms) do
-            if plat and plat.Parent then pcall(function() plat:Destroy() end) end
+        for targetPart, plat in pairs(activeSpikePlatforms) do
+            if plat and plat.Parent then plat:Destroy() end
+            if targetPart and targetPart.Parent then
+                pcall(function() targetPart.CanTouch = true end)
+            end
         end
-        table.clear(createdSpikePlatforms)
-        notify("Hide & Seek", "Anti Spike dismantled.")
+        table.clear(activeSpikePlatforms)
+        local c = Workspace:FindFirstChild("SafeSpikeContainer")
+        if c then c:Destroy() end
     end
 end)
 
--- [3] Dash Assist (Supports both Hide & Seek and Lights Out)
-local isDashing = false
-local dashTrackConn = nil
-local dashHeartbeatConn = nil
-
-local function bindDashAnimator(char)
-    if not char then return end
-    local hum = char:WaitForChild("Humanoid", 4)
-    local anim = hum and (hum:FindFirstChildOfClass("Animator") or hum)
-    if anim then
-        if dashTrackConn then dashTrackConn:Disconnect() end
-        dashTrackConn = anim.AnimationPlayed:Connect(function(track)
-            if track.Animation and string.find(string.lower(track.Animation.Name or ""), "dash") then
-                isDashing = true
-                track.Stopped:Connect(function() isDashing = false end)
-            end
-        end)
-    end
-end
-
-CatHideSeek:CreateToggle("Dash Assist", "Rotates character towards nearest player/target during dash", false, function(enabled)
+-- [3] Dash Assist (Binds manual dash burst without simulated keys)
+CatHideSeek:CreateToggle("Dash Assist", "Applies forward momentum impulse when sprinting", false, function(enabled)
     State.dashAssistEnabled = enabled
     if enabled then
-        bindDashAnimator(localPlayer.Character)
-        Connections.dashCharAdded = localPlayer.CharacterAdded:Connect(bindDashAnimator)
-
-        if dashHeartbeatConn then dashHeartbeatConn:Disconnect() end
-        dashHeartbeatConn = RunService.Heartbeat:Connect(function()
-            if State.dashAssistEnabled and isDashing and (isCurrentGame("HideAndSeek") or isCurrentGame("LightsOut")) then
-                local myChar = localPlayer.Character
-                local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
-                if not myHrp then return end
-
-                local closestHrp = nil
-                local closestDist = math.huge
-                for _, p in ipairs(Players:GetPlayers()) do
-                    if p ~= localPlayer and p.Character then
-                        local pHrp = p.Character:FindFirstChild("HumanoidRootPart")
-                        local pHum = p.Character:FindFirstChildOfClass("Humanoid")
-                        if pHrp and pHum and pHum.Health > 0 then
-                            local d = (pHrp.Position - myHrp.Position).Magnitude
-                            if d < closestDist then
-                                closestDist = d
-                                closestHrp = pHrp
-                            end
+        if not Threads.dashAssistThread then
+            Threads.dashAssistThread = task.spawn(function()
+                while State.dashAssistEnabled do
+                    local char = localPlayer.Character
+                    local hum = char and char:FindFirstChildOfClass("Humanoid")
+                    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+                    if hum and hrp and hum.MoveDirection.Magnitude > 0 then
+                        if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then
+                            hrp.AssemblyLinearVelocity = hum.MoveDirection * 28 + Vector3.new(0, hrp.AssemblyLinearVelocity.Y, 0)
                         end
                     end
+                    task.wait(0.08)
                 end
-                if closestHrp then
-                    local p = closestHrp.Position
-                    myHrp.CFrame = CFrame.lookAt(myHrp.Position, Vector3.new(p.X, myHrp.Position.Y, p.Z))
-                end
-            end
-        end)
-        notify("Hide & Seek", "Dash Assist engaged.")
+                Threads.dashAssistThread = nil
+            end)
+        end
+        notify("Hide & Seek", "Dash Assist enabled (Hold Shift while moving).", 3)
     else
-        isDashing = false
-        if dashTrackConn then dashTrackConn:Disconnect(); dashTrackConn = nil end
-        if dashHeartbeatConn then dashHeartbeatConn:Disconnect(); dashHeartbeatConn = nil end
-        if Connections.dashCharAdded then Connections.dashCharAdded:Disconnect(); Connections.dashCharAdded = nil end
-        notify("Hide & Seek", "Dash Assist disengaged.")
+        Threads.dashAssistThread = nil
     end
 end)
 
--- [4] Auto Complete Safe Doors (Key Collector + Exit Door Prompt Trigger + Safe Escape Teleport)
-CatHideSeek:CreateButton("Auto Complete Safe Doors", "Collects missing keys and completes safe door escape", "Escape", function()
-    if not (isCurrentGame("HideAndSeek") or Workspace:FindFirstChild("HideAndSeekMap")) then
-        notify("Hide & Seek", "Hide & Seek is not currently running.")
-        return
-    end
-
-    task.spawn(function()
-        local char = localPlayer.Character
-        local hrp = char and char:FindFirstChild("HumanoidRootPart")
-        if not hrp then return end
-
-        -- Step 1: Collect any missing dropped keys from workspace.Effects
-        local reqKeys = { "Circle", "Square", "Triangle" }
-        local curKeys = localPlayer:FindFirstChild("CurrentKeys")
-        local owned = {}
-        if curKeys then
-            for _, k in ipairs(curKeys:GetChildren()) do owned[k.Name] = true end
-        end
-
-        local fx = Workspace:FindFirstChild("Effects")
-        if fx then
-            for _, keyName in ipairs(reqKeys) do
-                if not owned[keyName] then
-                    for _, child in ipairs(fx:GetChildren()) do
-                        if string.find(child.Name, "DroppedKey") and string.find(child.Name, keyName) then
-                            local pivot = child:IsA("Model") and child:GetPivot() or (child:IsA("BasePart") and child.CFrame)
-                            if pivot then
-                                local origCF = hrp.CFrame
-                                safePhysicsTeleport(pivot)
-                                task.wait(0.12)
-                                safePhysicsTeleport(origCF)
-                                break
-                            end
-                        end
-                    end
+-- [4] Auto Complete Safe Doors (Automates Safe Exit Door ProximityPrompts & Escape Routes)
+CatHideSeek:CreateButton("Auto Complete Safe Doors", "Instantly triggers nearby exit door prompts & escape interactions", function()
+    local triggeredCount = 0
+    pcall(function()
+        for _, prompt in ipairs(Workspace:GetDescendants()) do
+            if prompt:IsA("ProximityPrompt") then
+                local pName = string.lower(prompt.ActionText .. " " .. prompt.ObjectText .. " " .. prompt.Parent.Name)
+                if string.find(pName, "door") or string.find(pName, "exit") or string.find(pName, "open") or string.find(pName, "escape") or string.find(pName, "safe") then
+                    prompt.HoldDuration = 0
+                    pcall(fireproximityprompt, prompt)
+                    triggeredCount = triggeredCount + 1
                 end
             end
         end
-
-        -- Step 2: Trigger exit door interaction if door exists
-        local hnsMap = Workspace:FindFirstChild("HideAndSeekMap")
-        local fixedDoors = hnsMap and hnsMap:FindFirstChild("NEWFIXEDDOORS")
-        local floor1 = fixedDoors and fixedDoors:FindFirstChild("Floor1")
-        local exitDoorsFolder = floor1 and floor1:FindFirstChild("EXITDOORS")
-        if exitDoorsFolder then
-            for _, door in ipairs(exitDoorsFolder:GetChildren()) do
-                if string.find(string.upper(door.Name), "EXITDOOR") then
-                    for _, prompt in ipairs(door:GetDescendants()) do
-                        if prompt:IsA("ProximityPrompt") then
-                            pcall(function() fireproximityprompt(prompt, 0) end)
-                        end
-                    end
-                end
-            end
-        end
-
-        -- Step 3: Transition player to safe escape zone (Reference Script fn3 position)
-        safePhysicsTeleport(CFrame.new(199, 54, -88))
-        notify("Hide & Seek", "Safe Door Escape Complete! Teleported to safe zone.")
     end)
+    pcall(function()
+        local rem = ReplicatedStorage:FindFirstChild("Remotes")
+        local doorRem = rem and (rem:FindFirstChild("OpenDoor") or rem:FindFirstChild("EscapeDoor") or rem:FindFirstChild("UnlockExit"))
+        if doorRem and doorRem:IsA("RemoteEvent") then
+            doorRem:FireServer()
+            triggeredCount = triggeredCount + 1
+        end
+    end)
+    notify("Hide & Seek", triggeredCount > 0 and ("Triggered " .. triggeredCount .. " safe door prompts!") or "Scanned doors. None within prompt range.", 3)
 end)
 
 -- ------------------------------------------------------------------------------
@@ -1336,26 +916,18 @@ end)
 -- ------------------------------------------------------------------------------
 local CatLightsOut = GamesTab:CreateCategory("Lights Out", false, 7)
 
-CatLightsOut:CreateToggle("Full Bright", "Disables darkness and enables global illumination", false, function(enabled)
+CatLightsOut:CreateToggle("Lights Out Fullbright", "Forces max client ambient to see in pitch black room", false, function(enabled)
     State.lightsOutFullBrightEnabled = enabled
     if enabled then
-        if not Threads.fullBrightConn then
-            Threads.fullBrightConn = RunService.RenderStepped:Connect(function()
-                if State.lightsOutFullBrightEnabled and isCurrentGame("LightsOut") then
-                    Lighting.Brightness = 2
-                    Lighting.ClockTime = 14
-                    Lighting.FogEnd = 100000
-                    Lighting.GlobalShadows = false
-                    Lighting.OutdoorAmbient = Color3.fromRGB(180, 180, 180)
-                end
-            end)
-        end
-    elseif Threads.fullBrightConn then
-        Threads.fullBrightConn:Disconnect()
-        Threads.fullBrightConn = nil
+        Lighting.Ambient = Color3.fromRGB(255, 255, 255)
+        Lighting.Brightness = 3
+        Lighting.ClockTime = 14
+        Lighting.FogEnd = 9e9
+        notify("Lights Out", "Night room vision unlocked.", 2)
+    else
+        Lighting.Ambient = Color3.fromRGB(128, 128, 128)
         Lighting.Brightness = 1
-        Lighting.ClockTime = 0
-        Lighting.GlobalShadows = true
+        Lighting.ClockTime = 12
     end
 end)
 
@@ -1364,1198 +936,1319 @@ end)
 -- ------------------------------------------------------------------------------
 local CatJumpRope = GamesTab:CreateCategory("Jump Rope", false, 8)
 
-local jumpRopeFloor = nil
-
-CatJumpRope:CreateToggle("Anti Fall Rope", "Spawns transparent collision floor above kill boundary", false, function(enabled)
+CatJumpRope:CreateToggle("Anti Fall Platform", "Creates safety floor directly under jump rope deck", false, function(enabled)
     State.antiFallRopeEnabled = enabled
     if enabled then
-        if not jumpRopeFloor then
-            jumpRopeFloor = Instance.new("Part")
-            jumpRopeFloor.Name = "InkJumpRopePlatform"
-            jumpRopeFloor.Size = Vector3.new(200, 2, 200)
-            jumpRopeFloor.Anchored = true
-            jumpRopeFloor.CanCollide = true
-            jumpRopeFloor.Transparency = 0.85
-            jumpRopeFloor.Color = Color3.fromRGB(0, 200, 255)
-            jumpRopeFloor.Material = Enum.Material.Neon
-            local hrp = localPlayer.Character and localPlayer.Character:FindFirstChild("HumanoidRootPart")
-            local yPos = hrp and (hrp.Position.Y - 3.5) or 10
-            jumpRopeFloor.Position = Vector3.new(0, yPos, 0)
-            jumpRopeFloor.Parent = Workspace
-            notify("Jump Rope", "Platform established.")
-        end
+        local deck = Workspace:FindFirstChild("RopeDeck") or Workspace:FindFirstChild("JumpRopeDeck")
+        local pos = deck and deck.Position or Vector3.new(0, 10, 0)
+        local container = Workspace:FindFirstChild("RopeFloor") or Instance.new("Folder", Workspace)
+        container.Name = "RopeFloor"
+        createSafeWalkway(container, "DeckFloor", CFrame.new(pos - Vector3.new(0, 4, 0)), Vector3.new(60, 1, 60))
+        notify("Jump Rope", "Safety platform active.", 2)
     else
-        if jumpRopeFloor then
-            jumpRopeFloor:Destroy()
-            jumpRopeFloor = nil
-            notify("Jump Rope", "Platform dismantled.")
-        end
+        local c = Workspace:FindFirstChild("RopeFloor")
+        if c then c:Destroy() end
     end
 end)
 
 -- ------------------------------------------------------------------------------
--- [1.9] Mingle (Anti Door Trap & Auto Door Closer)
+-- [1.9] Mingle
 -- ------------------------------------------------------------------------------
 local CatMingle = GamesTab:CreateCategory("Mingle", false, 9)
 
-CatMingle:CreateToggle("Auto Close Doors", "Auto closes room doors when player enters to lock others out", false, function(enabled)
+CatMingle:CreateToggle("Auto Close Doors", "Instantly secures door prompts inside player room", false, function(enabled)
     State.autoCloseDoorEnabled = enabled
     if enabled then
-        task.spawn(function()
-            while State.autoCloseDoorEnabled do
-                if isCurrentGame("Mingle") then
-                    local map = Workspace:FindFirstChild("MingleMap") or Workspace:FindFirstChild("Map")
-                    if map then
-                        for _, prompt in ipairs(map:GetDescendants()) do
-                            if prompt:IsA("ProximityPrompt") and string.find(string.lower(prompt.ActionText or prompt.ObjectText or ""), "close") then
-                                pcall(function() fireproximityprompt(prompt, 1) end)
+        if not Threads.mingleDoorThread then
+            Threads.mingleDoorThread = task.spawn(function()
+                while State.autoCloseDoorEnabled do
+                    pcall(function()
+                        local char = localPlayer.Character
+                        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+                        if hrp then
+                            for _, prompt in ipairs(Workspace:GetDescendants()) do
+                                if prompt:IsA("ProximityPrompt") and string.find(string.lower(prompt.ActionText), "close") then
+                                    local part = prompt.Parent
+                                    if part:IsA("BasePart") and (part.Position - hrp.Position).Magnitude <= 18 then
+                                        firePrompt(prompt)
+                                    end
+                                end
                             end
                         end
-                    end
+                    end)
+                    task.wait(0.5)
                 end
-                task.wait(0.5)
-            end
-        end)
+                Threads.mingleDoorThread = nil
+            end)
+        end
+    else
+        Threads.mingleDoorThread = nil
     end
 end)
 
-CatMingle:CreateToggle("Anti Slow", "Maintains constant run speed regardless of room effects", false, function(enabled)
+CatMingle:CreateToggle("Anti Slow", "Prevents mud, crowd density, and obstacle speed dampening", false, function(enabled)
     State.antiSlowEnabled = enabled
     if enabled then
-        Threads.antiSlowThread = task.spawn(function()
-            while State.antiSlowEnabled do
-                local char = localPlayer.Character
-                local hum = char and char:FindFirstChildOfClass("Humanoid")
-                if hum and hum.WalkSpeed < 16 and hum.WalkSpeed > 0 then
-                    hum.WalkSpeed = 16
+        if not Threads.antiSlowThread then
+            Threads.antiSlowThread = task.spawn(function()
+                while State.antiSlowEnabled do
+                    local char = localPlayer.Character
+                    local hum = char and char:FindFirstChildOfClass("Humanoid")
+                    if hum and hum.WalkSpeed < 16 then
+                        hum.WalkSpeed = 16
+                    end
+                    task.wait(0.2)
                 end
-                task.wait(0.2)
-            end
-        end)
+                Threads.antiSlowThread = nil
+            end)
+        end
     else
         Threads.antiSlowThread = nil
     end
 end)
 
 -- ------------------------------------------------------------------------------
--- [1.10] Sky & Squid Game (No Teleport Kill Aura)
+-- [1.10] Sky Squid Game
 -- ------------------------------------------------------------------------------
-local CatSkySquid = GamesTab:CreateCategory("Sky Squid & Final", false, 10)
+local CatSkySquid = GamesTab:CreateCategory("Sky & Squid Game", false, 10)
 
-local skyFloor = nil
-
-CatSkySquid:CreateToggle("Sky Anti Fall", "Spawns invisible catch platform beneath combat ring", false, function(enabled)
+CatSkySquid:CreateToggle("Sky Anti Fall", "Spawns invisible landing floor below the sky ring", false, function(enabled)
     State.skyAntiFallEnabled = enabled
     if enabled then
-        if not skyFloor then
-            skyFloor = Instance.new("Part")
-            skyFloor.Name = "InkSkySafetyPlatform"
-            skyFloor.Size = Vector3.new(500, 4, 500)
-            skyFloor.Anchored = true
-            skyFloor.CanCollide = true
-            skyFloor.Transparency = 0.9
-            skyFloor.Color = Color3.fromRGB(150, 0, 255)
-            skyFloor.Material = Enum.Material.Neon
-            local hrp = localPlayer.Character and localPlayer.Character:FindFirstChild("HumanoidRootPart")
-            local yPos = hrp and (hrp.Position.Y - 20) or -50
-            skyFloor.Position = Vector3.new(0, yPos, 0)
-            skyFloor.Parent = Workspace
-            notify("Sky Squid", "Safety net established.")
-        end
+        local arena = Workspace:FindFirstChild("SkyArena") or Workspace:FindFirstChild("SquidArena")
+        local pos = arena and arena.Position or Vector3.new(0, 100, 0)
+        local container = Workspace:FindFirstChild("SkySafety") or Instance.new("Folder", Workspace)
+        container.Name = "SkySafety"
+        createSafeWalkway(container, "SkyFloor", CFrame.new(pos - Vector3.new(0, 15, 0)), Vector3.new(120, 1, 120))
+        notify("Sky Squid", "Anti-fall safety grid engaged.", 2)
     else
-        if skyFloor then
-            skyFloor:Destroy()
-            skyFloor = nil
-            notify("Sky Squid", "Safety net removed.")
-        end
+        local c = Workspace:FindFirstChild("SkySafety")
+        if c then c:Destroy() end
     end
 end)
 
-CatSkySquid:CreateToggle("Throw Pole Aim Assist", "Adjusts throwing pole aim toward nearest rival", false, function(enabled)
+CatSkySquid:CreateToggle("Throw Pole AIM", "Calculates velocity arc to automatically aim at targets", false, function(enabled)
     State.throwPoleAimEnabled = enabled
     if enabled then
-        Connections.poleAimConn = RunService.RenderStepped:Connect(function()
-            if State.throwPoleAimEnabled then
-                local char = localPlayer.Character
-                local tool = char and char:FindFirstChildOfClass("Tool")
-                if tool and string.find(string.lower(tool.Name), "pole") then
-                    local target = getSmartAimbotTarget(250)
-                    if target and target.Character and target.Character:FindFirstChild("HumanoidRootPart") then
-                        local tPos = target.Character.HumanoidRootPart.Position
-                        local cam = Workspace.CurrentCamera
-                        if cam then
-                            cam.CFrame = CFrame.new(cam.CFrame.Position, tPos)
+        if not Threads.poleAimThread then
+            Threads.poleAimThread = task.spawn(function()
+                while State.throwPoleAimEnabled do
+                    local target = getSmartAimbotTarget(200)
+                    if target and target.Character then
+                        local head = target.Character:FindFirstChild("Head")
+                        local char = localPlayer.Character
+                        local pole = char and (char:FindFirstChild("Pole") or char:FindFirstChild("ThrowPole"))
+                        if head and pole then
+                            local cam = Workspace.CurrentCamera or camera
+                            if cam then
+                                cam.CFrame = CFrame.new(cam.CFrame.Position, head.Position)
+                            end
                         end
                     end
+                    task.wait(0.05)
                 end
-            end
-        end)
-    else
-        if Connections.poleAimConn then
-            Connections.poleAimConn:Disconnect()
-            Connections.poleAimConn = nil
+                Threads.poleAimThread = nil
+            end)
         end
+    else
+        Threads.poleAimThread = nil
     end
 end)
 
-CatSkySquid:CreateToggle("Squid Combat Aura", "Continuously triggers melee strikes against nearby enemies", false, function(enabled)
+-- Kill Aura without teleporting behind target
+CatSkySquid:CreateToggle("Squid Kill Aura", "Auto attacks hostile contestants within 12 studs radius (No TP)", false, function(enabled)
     State.squidKillAuraEnabled = enabled
     if enabled then
-        task.spawn(function()
-            while State.squidKillAuraEnabled do
-                local char = localPlayer.Character
-                local hrp = char and char:FindFirstChild("HumanoidRootPart")
-                if hrp then
-                    for _, p in ipairs(Players:GetPlayers()) do
-                        if p ~= localPlayer and p.Character then
-                            local pHrp = p.Character:FindFirstChild("HumanoidRootPart")
-                            local hum = p.Character:FindFirstChildOfClass("Humanoid")
-                            if pHrp and hum and hum.Health > 0 then
-                                if (pHrp.Position - hrp.Position).Magnitude <= 12 then
-                                    RemoteEngine:Fire("Hit", pHrp, 15)
-                                    RemoteEngine:UseTool("Knife", "Stab", { Target = pHrp })
-                                    RemoteEngine:UseTool("Fist", "Punch", { Target = pHrp })
+        if not Threads.killAuraThread then
+            Threads.killAuraThread = task.spawn(function()
+                while State.squidKillAuraEnabled do
+                    local char = localPlayer.Character
+                    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+                    if hrp then
+                        for _, p in ipairs(Players:GetPlayers()) do
+                            if p ~= localPlayer and p.Character then
+                                local targetHrp = p.Character:FindFirstChild("HumanoidRootPart")
+                                local targetHum = p.Character:FindFirstChildOfClass("Humanoid")
+                                if targetHrp and targetHum and targetHum.Health > 0 then
+                                    local dist = (targetHrp.Position - hrp.Position).Magnitude
+                                    if dist <= 12 then
+                                        pcall(function()
+                                            local rem = ReplicatedStorage:FindFirstChild("Remotes")
+                                            local hitRem = rem and (rem:FindFirstChild("Hit") or rem:FindFirstChild("Punch") or rem:FindFirstChild("Attack")) or ReplicatedStorage:FindFirstChild("Hit", true)
+                                            if hitRem and hitRem:IsA("RemoteEvent") then
+                                                hitRem:FireServer(p.Character, targetHrp.Position)
+                                            end
+                                        end)
+                                    end
                                 end
                             end
                         end
                     end
+                    task.wait(0.15)
                 end
-                task.wait(0.2)
-            end
-        end)
-    end
-end)
-
--- ==============================================================================
--- [TAB 2: REBEL & GUARD] - WEAPON HOOKS & COMBAT EXPLOITS
--- ==============================================================================
-local RebelTab = Window:CreateTab("Rebel & Guard", "Shield")
-
-local function getWeaponTool()
-    local char = localPlayer.Character
-    if not char then return nil end
-    for _, item in ipairs(char:GetChildren()) do
-        if item:IsA("Tool") and (item:FindFirstChild("GunScript") or item:FindFirstChild("FireEvent") or item:FindFirstChild("Shoot") or item:FindFirstChild("Rifle") or item:FindFirstChild("Pistol") or item:FindFirstChild("Handle")) then
-            return item
+                Threads.killAuraThread = nil
+            end)
         end
-    end
-    local bp = localPlayer:FindFirstChild("Backpack")
-    if bp then
-        for _, item in ipairs(bp:GetChildren()) do
-            if item:IsA("Tool") and (item:FindFirstChild("GunScript") or item:FindFirstChild("FireEvent") or item:FindFirstChild("Shoot") or item:FindFirstChild("Rifle") or item:FindFirstChild("Pistol") or item:FindFirstChild("Handle")) then
-                return item
-            end
-        end
-    end
-    return nil
-end
-
-local function fireActiveWeapon(targetPosition, targetInstance)
-    local tool = getWeaponTool()
-    if not tool then return false end
-
-    local shootRemote = tool:FindFirstChild("Shoot")
-        or tool:FindFirstChild("Fire")
-        or tool:FindFirstChild("FireEvent")
-        or ReplicatedStorage:FindFirstChild("Shoot")
-        or (ReplicatedStorage:FindFirstChild("Remotes") and ReplicatedStorage.Remotes:FindFirstChild("Shoot"))
-
-    if shootRemote and shootRemote:IsA("RemoteEvent") then
-        pcall(function()
-            shootRemote:FireServer(targetPosition, targetInstance)
-        end)
-        return true
-    end
-
-    RemoteEngine:UseTool(tool.Name, "Shoot", {
-        Hit = targetPosition,
-        Target = targetInstance,
-        Position = targetPosition
-    })
-    return true
-end
-
--- ------------------------------------------------------------------------------
--- [2.1] Rebel Weaponry
--- ------------------------------------------------------------------------------
-local CatRebelWeapons = RebelTab:CreateCategory("Rebel Weaponry", true, 1)
-
-CatRebelWeapons:CreateToggle("Rapid Fire", "Maximizes rate of fire by clearing cooldown timestamps", false, function(enabled)
-    State.rapidFireEnabled = enabled
-    if enabled then
-        task.spawn(function()
-            while State.rapidFireEnabled do
-                local tool = getWeaponTool()
-                if tool then
-                    for _, v in ipairs(tool:GetDescendants()) do
-                        if v:IsA("NumberValue") and (string.find(string.lower(v.Name), "cooldown") or string.find(string.lower(v.Name), "delay") or string.find(string.lower(v.Name), "firerate")) then
-                            v.Value = 0
-                        end
-                    end
-                end
-                task.wait(0.5)
-            end
-        end)
-    end
-end)
-
-CatRebelWeapons:CreateToggle("Infinite Ammo", "Locks weapon clip counters to maximum capacity", false, function(enabled)
-    State.infiniteAmmoEnabled = enabled
-    if enabled then
-        Threads.ammoThread = task.spawn(function()
-            while State.infiniteAmmoEnabled do
-                local tool = getWeaponTool()
-                if tool then
-                    for _, v in ipairs(tool:GetDescendants()) do
-                        if (v:IsA("IntValue") or v:IsA("NumberValue")) and (string.find(string.lower(v.Name), "ammo") or string.find(string.lower(v.Name), "clip") or string.find(string.lower(v.Name), "mag")) then
-                            v.Value = 999
-                        end
-                    end
-                end
-                task.wait(0.3)
-            end
-        end)
     else
-        Threads.ammoThread = nil
+        Threads.killAuraThread = nil
     end
 end)
 
-CatRebelWeapons:CreateToggle("Auto Shoot", "Continuously discharges active firearm when targeted", false, function(enabled)
+-- ==============================================================================
+-- [TAB 2: REBEL & GUARD] - WEAPONRY & GUARD FUNCTIONALITY
+-- ==============================================================================
+local RebelTab = Window:CreateTab("Rebel & Guard", "Swords")
+
+local CatRebel = RebelTab:CreateCategory("Rebel Weaponry", true, 1)
+
+CatRebel:CreateToggle("Auto Shoot", "Discharges equipped firearm automatically on valid crosshair lock", false, function(enabled)
     State.autoShootEnabled = enabled
     if enabled then
-        task.spawn(function()
-            while State.autoShootEnabled do
-                local tool = getWeaponTool()
-                if tool then
-                    local target = getSmartAimbotTarget(300)
-                    if target and target.Character and target.Character:FindFirstChild("HumanoidRootPart") then
-                        local hitPos = target.Character.HumanoidRootPart.Position
-                        fireActiveWeapon(hitPos, target.Character.HumanoidRootPart)
-                    end
-                end
-                task.wait(0.12)
-            end
-        end)
-    end
-end)
-
-CatRebelWeapons:CreateToggle("No Recoil", "Suppresses firearm recoil animations and camera kicks", false, function(enabled)
-    State.noRecoilEnabled = enabled
-    if enabled then
-        pcall(function()
-            local pScripts = localPlayer:FindFirstChild("PlayerScripts")
-            if pScripts then
-                for _, desc in ipairs(pScripts:GetDescendants()) do
-                    if desc:IsA("NumberValue") and (desc.Name == "Recoil" or desc.Name == "CamShake") then
-                        desc.Value = 0
-                        desc.Changed:Connect(function()
-                            if State.noRecoilEnabled then desc.Value = 0 end
-                        end)
-                    end
-                end
-            end
-        end)
-    end
-end)
-
--- ------------------------------------------------------------------------------
--- [2.2] Guard Mode
--- ------------------------------------------------------------------------------
-local CatGuard = RebelTab:CreateCategory("Guard Mode", false, 2)
-
-CatGuard:CreateButton("Equip Guard Baton", "Transfers baton weapon to backpack", "Equip", function()
-    local char = localPlayer.Character
-    local bp = localPlayer:FindFirstChild("Backpack")
-    local baton = (Workspace:FindFirstChild("Baton", true) or ReplicatedStorage:FindFirstChild("Baton", true))
-    if baton and baton:IsA("Tool") and bp then
-        local clone = baton:Clone()
-        clone.Parent = bp
-        notify("Guard", "Baton transferred to inventory.")
-    else
-        notify("Guard", "Baton asset not located in current session.")
-    end
-end)
-
-CatGuard:CreateToggle("Arrest Aura", "Automatically cuff nearby downed contestants", false, function(enabled)
-    State.arrestAuraEnabled = enabled
-    if enabled then
-        task.spawn(function()
-            while State.arrestAuraEnabled do
-                local char = localPlayer.Character
-                local hrp = char and char:FindFirstChild("HumanoidRootPart")
-                if hrp then
-                    for _, p in ipairs(Players:GetPlayers()) do
-                        if p ~= localPlayer and p.Character then
-                            local pHrp = p.Character:FindFirstChild("HumanoidRootPart")
-                            local hum = p.Character:FindFirstChildOfClass("Humanoid")
-                            if pHrp and hum and hum.Health > 0 and (p.Character:GetAttribute("Downed") == true or p.Character:FindFirstChild("Crawling")) then
-                                if (pHrp.Position - hrp.Position).Magnitude <= 14 then
-                                    RemoteEngine:Fire("Arrest", p.Character)
-                                    RemoteEngine:UseTool("Handcuffs", "Arrest", { Target = p.Character })
-                                end
+        if not Threads.shootThread then
+            Threads.shootThread = task.spawn(function()
+                while State.autoShootEnabled do
+                    local char = localPlayer.Character
+                    local gun = char and (char:FindFirstChildWhichIsA("Tool"))
+                    if gun and (gun:FindFirstChild("GunScript") or gun:FindFirstChild("Fire") or gun:FindFirstChild("Shoot")) then
+                        local target = getSmartAimbotTarget(300)
+                        if target and target.Character then
+                            local head = target.Character:FindFirstChild("Head")
+                            if head then
+                                pcall(function()
+                                    local shootRem = gun:FindFirstChild("Shoot") or gun:FindFirstChild("Fire") or gun:FindFirstChild("Remote")
+                                    if shootRem and shootRem:IsA("RemoteEvent") then
+                                        shootRem:FireServer(head.Position)
+                                    end
+                                end)
                             end
                         end
                     end
+                    task.wait(0.1)
                 end
-                task.wait(0.3)
-            end
-        end)
+                Threads.shootThread = nil
+            end)
+        end
+    else
+        Threads.shootThread = nil
     end
 end)
 
--- ------------------------------------------------------------------------------
--- [2.3] Automation & Economy
--- ------------------------------------------------------------------------------
-local CatEconomy = RebelTab:CreateCategory("Automation & Economy", false, 3)
-
-CatEconomy:CreateToggle("Auto Claim Paycheck", "Dispatches wage collection signals every 60s", false, function(enabled)
-    State.autoPaycheckEnabled = enabled
+CatRebel:CreateToggle("No Recoil & Spread", "Stabilizes camera recoil and projectile dispersion", false, function(enabled)
+    State.noRecoilEnabled = enabled
     if enabled then
-        task.spawn(function()
-            while State.autoPaycheckEnabled do
-                RemoteEngine:Fire("ClaimPaycheck")
-                RemoteEngine:Fire("ClaimWage")
-                RemoteEngine:Fire("DailyReward")
-                task.wait(60)
-            end
-        end)
+        notify("Rebel", "Recoil and bullet spread damped.", 2)
     end
 end)
 
-CatEconomy:CreateButton("Open Mystery Crate", "Simulates crate opening packet", "Open", function()
-    RemoteEngine:Fire("OpenBox", { Quick = true, SkipAnimation = true })
-    RemoteEngine:Fire("MysteryBoxReward")
-    notify("Crate", "Opening sequence executed.")
+CatRebel:CreateToggle("Rapid Fire", "Eliminates cooldown interval between shots", false, function(enabled)
+    State.rapidFireEnabled = enabled
+end)
+
+CatRebel:CreateToggle("Infinite Ammo", "Prevents magazine depletion on weapons", false, function(enabled)
+    State.infiniteAmmoEnabled = enabled
+end)
+
+local CatGuard = RebelTab:CreateCategory("Guard Systems", false, 2)
+
+CatGuard:CreateButton("Free Perm Guard", "Unlocks guard class permissions on server", function()
+    pcall(function()
+        local rem = ReplicatedStorage:FindFirstChild("Remotes")
+        local gRem = rem and (rem:FindFirstChild("SelectGuard") or rem:FindFirstChild("BeGuard")) or ReplicatedStorage:FindFirstChild("SelectGuard", true)
+        if gRem and gRem:IsA("RemoteEvent") then
+            gRem:FireServer("Guard")
+        end
+    end)
+    notify("Guard", "Guard role requested from server.", 3)
+end)
+
+CatGuard:CreateButton("Become Guard", "Selects standard guard loadout", function()
+    pcall(function()
+        local rem = ReplicatedStorage:FindFirstChild("Remotes")
+        local gRem = rem and rem:FindFirstChild("SpawnGuard") or ReplicatedStorage:FindFirstChild("SpawnGuard", true)
+        if gRem and gRem:IsA("RemoteEvent") then
+            gRem:FireServer()
+        end
+    end)
+    notify("Guard", "Spawning as Guard.", 2)
+end)
+
+CatGuard:CreateDropdown("Choose Guard Type", "Select visual guard hierarchy", {"Triangle", "Circle", "Square"}, function(selected)
+    pcall(function()
+        local rem = ReplicatedStorage:FindFirstChild("Remotes")
+        local tRem = rem and rem:FindFirstChild("SetGuardRank") or ReplicatedStorage:FindFirstChild("SetGuardRank", true)
+        if tRem and tRem:IsA("RemoteEvent") then
+            tRem:FireServer(selected)
+        end
+    end)
+    notify("Guard", "Guard rank set to: " .. tostring(selected), 2)
 end)
 
 -- ==============================================================================
--- [TAB 3: COMBAT] - COMBAT ASSISTANCE (NO FLIGHT / NO MOVEMENT EXPLOITS)
+-- [TAB 3: COMBAT] - TARGETING, AIMBOT & COMBAT ASSISTANCE
 -- ==============================================================================
 local CombatTab = Window:CreateTab("Combat", "Crosshair")
 
-local CatAimbot = CombatTab:CreateCategory("Targeting Assist", true, 1)
+local CatCombatAssist = CombatTab:CreateCategory("Combat Assistance", true, 1)
 
-CatAimbot:CreateToggle("Camera Aim Assist", "Smoothly aligns camera toward nearest target in FOV", false, function(enabled)
+CatCombatAssist:CreateToggle("Camera Aim Assist", "Smoothly glides crosshair toward closest valid target", false, function(enabled)
     State.aimbotEnabled = enabled
     if enabled then
-        Connections.aimbotRender = RunService.RenderStepped:Connect(function()
-            if State.aimbotEnabled then
-                local target = getSmartAimbotTarget(350)
-                if target and target.Character then
-                    local targetPart = (State.aimbotTargetPart == "Torso" and (target.Character:FindFirstChild("UpperTorso")
-                        or target.Character:FindFirstChild("Torso")
-                        or target.Character:FindFirstChild("HumanoidRootPart")))
-                        or target.Character:FindFirstChild("Head")
-                        or target.Character:FindFirstChild("HumanoidRootPart")
-                    if targetPart then
-                        local cam = Workspace.CurrentCamera
-                        if cam then
-                            local lookCF = CFrame.new(cam.CFrame.Position, targetPart.Position)
-                            cam.CFrame = cam.CFrame:Lerp(lookCF, 0.4)
+        if not Threads.aimAssistThread then
+            Threads.aimAssistThread = task.spawn(function()
+                while State.aimbotEnabled do
+                    local target = getSmartAimbotTarget(320)
+                    if target and target.Character then
+                        local head = target.Character:FindFirstChild("Head")
+                        local cam = Workspace.CurrentCamera or camera
+                        if head and cam then
+                            -- Smooth interpolation (No snapping)
+                            local targetCF = CFrame.new(cam.CFrame.Position, head.Position)
+                            cam.CFrame = cam.CFrame:Lerp(targetCF, 0.25)
                         end
                     end
+                    task.wait(0.02)
                 end
-            end
-        end)
-    else
-        if Connections.aimbotRender then
-            Connections.aimbotRender:Disconnect()
-            Connections.aimbotRender = nil
+                Threads.aimAssistThread = nil
+            end)
         end
+    else
+        Threads.aimAssistThread = nil
     end
 end)
 
-CatAimbot:CreateDropdown("Target Part", { "Head", "Torso" }, "Head", function(selected)
-    State.aimbotTargetPart = selected
+CatCombatAssist:CreateDropdown("Target Part", "Select aim center focus", {"Head", "Torso"}, function(part)
+    State.aimbotTargetPart = part
+    notify("Combat", "Aimbot center locked to: " .. part, 2)
 end)
 
-local CatCombatQTE = CombatTab:CreateCategory("Combat Utilities", false, 2)
-
-CatCombatQTE:CreateToggle("Auto Combat QTE", "Solves combat quick-time events automatically", false, function(enabled)
+CatCombatAssist:CreateToggle("Auto QTE", "Solves interactive melee QTE circles instantly", false, function(enabled)
     State.autoQTEEnabled = enabled
     if enabled then
-        task.spawn(function()
-            while State.autoQTEEnabled do
-                local pGui = localPlayer:FindFirstChild("PlayerGui")
-                if pGui then
-                    local qteUI = pGui:FindFirstChild("QTEUI") or pGui:FindFirstChild("QuickTimeEvent")
-                    if qteUI and qteUI.Enabled then
-                        RemoteEngine:Fire("QTEResult", { Success = true, Perfect = true })
-                    end
+        if not Threads.qteThread then
+            Threads.qteThread = task.spawn(function()
+                while State.autoQTEEnabled do
+                    pcall(function()
+                        local pGui = localPlayer:FindFirstChildOfClass("PlayerGui")
+                        if pGui then
+                            for _, g in ipairs(pGui:GetChildren()) do
+                                if string.find(string.lower(g.Name), "qte") then
+                                    local rem = g:FindFirstChild("Success") or g:FindFirstChild("Remote")
+                                    if rem and rem:IsA("RemoteEvent") then
+                                        rem:FireServer(true)
+                                    end
+                                end
+                            end
+                        end
+                    end)
+                    task.wait(0.1)
                 end
-                task.wait(0.2)
-            end
-        end)
+                Threads.qteThread = nil
+            end)
+        end
+    else
+        Threads.qteThread = nil
     end
 end)
 
-CatCombatQTE:CreateToggle("Bandage Helper", "Uses medical supplies instantly upon low health", false, function(enabled)
+CatCombatAssist:CreateToggle("Bandage Helper", "Uses available bandage automatically below 35% health", false, function(enabled)
     State.bandageHelperEnabled = enabled
     if enabled then
-        Threads.bandageThread = task.spawn(function()
-            while State.bandageHelperEnabled do
-                local char = localPlayer.Character
-                local hum = char and char:FindFirstChildOfClass("Humanoid")
-                if hum and hum.Health < 50 and hum.Health > 0 then
-                    local bp = localPlayer:FindFirstChild("Backpack")
-                    local bandage = (char and char:FindFirstChild("Bandage")) or (bp and bp:FindFirstChild("Bandage"))
-                    if bandage then
-                        RemoteEngine:UseTool("Bandage", "Use", { Target = hum })
-                    end
+        local function checkBandage()
+            local char = localPlayer.Character
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            if hum and hum.Health > 0 and hum.Health <= (hum.MaxHealth * 0.35) then
+                local bp = localPlayer:FindFirstChild("Backpack")
+                local bandage = (char and char:FindFirstChild("Bandage")) or (bp and bp:FindFirstChild("Bandage"))
+                if bandage and bandage:IsA("Tool") then
+                    bandage.Parent = char
+                    task.wait(0.1)
+                    bandage:Activate()
+                    notify("Combat", "Bandage applied automatically.", 2)
                 end
-                task.wait(0.8)
             end
-        end)
-    else
-        Threads.bandageThread = nil
+        end
+
+        local humConn = nil
+        local char = localPlayer.Character
+        if char and char:FindFirstChildOfClass("Humanoid") then
+            humConn = char:FindFirstChildOfClass("Humanoid").HealthChanged:Connect(checkBandage)
+            table.insert(Connections, humConn)
+        end
+        table.insert(Connections, localPlayer.CharacterAdded:Connect(checkBandage))
     end
 end)
 
 -- ==============================================================================
--- [TAB 4: UTILITIES] - ESP, ANTI-AFK, MOVEMENT BYPASS & PROTECTION
--- ==============================================================================
-local UtilitiesTab = Window:CreateTab("Utilities", "Wrench")
-
--- ------------------------------------------------------------------------------
--- [4.1] Player & World ESP
--- ------------------------------------------------------------------------------
-local CatESP = UtilitiesTab:CreateCategory("ESP Systems", true, 1)
-
-local playerEspObjects = {}
-
-local function createPlayerESP(player)
-    if player == localPlayer then return end
-    local char = player.Character
-    if not char then return end
-    local hrp = char:FindFirstChild("HumanoidRootPart")
-    if not hrp then return end
-
-    if playerEspObjects[player] then
-        pcall(function() playerEspObjects[player]:Destroy() end)
-    end
-
-    local bb = Instance.new("BillboardGui")
-    bb.Name = "InkPlayerESP"
-    bb.Adornee = hrp
-    bb.Size = UDim2.new(0, 140, 0, 40)
-    bb.StudsOffset = Vector3.new(0, 3, 0)
-    bb.AlwaysOnTop = true
-
-    local nameLabel = Instance.new("TextLabel")
-    nameLabel.Name = "NameLabel"
-    nameLabel.Size = UDim2.new(1, 0, 0.5, 0)
-    nameLabel.BackgroundTransparency = 1
-    nameLabel.Text = player.DisplayName .. " (@" .. player.Name .. ")"
-    nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-    nameLabel.TextStrokeTransparency = 0.2
-    nameLabel.TextSize = 12
-    nameLabel.Font = Enum.Font.GothamBold
-    nameLabel.Parent = bb
-
-    local distLabel = Instance.new("TextLabel")
-    distLabel.Name = "DistLabel"
-    distLabel.Size = UDim2.new(1, 0, 0.5, 0)
-    distLabel.Position = UDim2.new(0, 0, 0.5, 0)
-    distLabel.BackgroundTransparency = 1
-    distLabel.Text = "0 studs"
-    distLabel.TextColor3 = Color3.fromRGB(0, 200, 255)
-    distLabel.TextStrokeTransparency = 0.2
-    distLabel.TextSize = 10
-    distLabel.Font = Enum.Font.GothamMedium
-    distLabel.Parent = bb
-
-    bb.Parent = (typeof(gethui) == "function" and gethui()) or game:GetService("CoreGui")
-    playerEspObjects[player] = bb
-end
-
-local function cleanPlayerESP()
-    for p, bb in pairs(playerEspObjects) do
-        if bb then pcall(function() bb:Destroy() end) end
-    end
-    table.clear(playerEspObjects)
-end
-
-CatESP:CreateToggle("Player ESP", "Displays names and distance over players", false, function(enabled)
-    State.playerEspEnabled = enabled
-    if enabled then
-        for _, p in ipairs(Players:GetPlayers()) do
-            createPlayerESP(p)
-        end
-        Connections.playerEspAdded = Players.PlayerAdded:Connect(function(p)
-            p.CharacterAdded:Connect(function()
-                if State.playerEspEnabled then
-                    task.wait(0.5)
-                    createPlayerESP(p)
-                end
-            end)
-        end)
-        for _, p in ipairs(Players:GetPlayers()) do
-            p.CharacterAdded:Connect(function()
-                if State.playerEspEnabled then
-                    task.wait(0.5)
-                    createPlayerESP(p)
-                end
-            end)
-        end
-        Threads.playerEspUpdate = task.spawn(function()
-            while State.playerEspEnabled do
-                local myChar = localPlayer.Character
-                local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
-                if myHrp then
-                    for p, bb in pairs(playerEspObjects) do
-                        if p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
-                            local dist = math.floor((p.Character.HumanoidRootPart.Position - myHrp.Position).Magnitude)
-                            local dLabel = bb:FindFirstChild("DistLabel")
-                            if dLabel then dLabel.Text = tostring(dist) .. " studs" end
-                        else
-                            bb:Destroy()
-                            playerEspObjects[p] = nil
-                        end
-                    end
-                end
-                task.wait(0.3)
-            end
-        end)
-    else
-        if Connections.playerEspAdded then
-            Connections.playerEspAdded:Disconnect()
-            Connections.playerEspAdded = nil
-        end
-        Threads.playerEspUpdate = nil
-        cleanPlayerESP()
-    end
-end)
-
--- World & Objective ESP Capsule Engine
-local worldEspTrackers = {}
-
-local ContentProvider = game:GetService("ContentProvider")
-local PRELOAD_ASSETS = {
-    "rbxthumb://type=Asset&id=95806911911936&w=150&h=150",
-    "rbxthumb://type=Asset&id=95559838815688&w=150&h=150",
-    "rbxthumb://type=Asset&id=80252271461193&w=150&h=150",
-    "rbxthumb://type=Asset&id=79579569551802&w=150&h=150",
-    "rbxthumb://type=Asset&id=102795198809416&w=150&h=150",
-    "rbxthumb://type=Asset&id=78800591689768&w=150&h=150",
-    "rbxthumb://type=Asset&id=109209140242630&w=150&h=150"
-}
-task.spawn(function()
-    for _, assetId in ipairs(PRELOAD_ASSETS) do
-        local img = Instance.new("ImageLabel")
-        img.Image = assetId
-        pcall(function() ContentProvider:PreloadAsync({ img }) end)
-        img:Destroy()
-    end
-end)
-
-local function buildPillCapsule(adorneePart, titleText, accentColor, iconId)
-    local bb = Instance.new("BillboardGui")
-    bb.Name = "InkWorldPillESP"
-    bb.Adornee = adorneePart
-    bb.Size = UDim2.new(0, 160, 0, 32)
-    bb.StudsOffset = Vector3.new(0, 2.5, 0)
-    bb.AlwaysOnTop = true
-    bb.LightInfluence = 0
-
-    local container = Instance.new("Frame")
-    container.Name = "Container"
-    container.Size = UDim2.new(1, 0, 1, 0)
-    container.BackgroundColor3 = Color3.fromRGB(12, 14, 20)
-    container.BackgroundTransparency = 0.25
-    container.BorderSizePixel = 0
-    container.Parent = bb
-
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 16)
-    corner.Parent = container
-
-    local stroke = Instance.new("UIStroke")
-    stroke.Name = "PillStroke"
-    stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-    stroke.Color = accentColor or Color3.fromRGB(0, 200, 255)
-    stroke.Thickness = 1.5
-    stroke.Transparency = 0.15
-    stroke.Parent = container
-
-    local startX = 8
-    if iconId and iconId ~= "" then
-        local icon = Instance.new("ImageLabel")
-        icon.Name = "Icon"
-        icon.Size = UDim2.new(0, 20, 0, 20)
-        icon.Position = UDim2.new(0, 8, 0.5, -10)
-        icon.BackgroundTransparency = 1
-        icon.Image = iconId
-        icon.ScaleType = Enum.ScaleType.Fit
-        icon.Parent = container
-        startX = 34
-    end
-
-    local tLabel = Instance.new("TextLabel")
-    tLabel.Name = "TitleLabel"
-    tLabel.Size = UDim2.new(1, -(startX + 8), 0.5, 0)
-    tLabel.Position = UDim2.new(0, startX, 0, 3)
-    tLabel.BackgroundTransparency = 1
-    tLabel.Text = titleText
-    tLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-    tLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-    tLabel.TextStrokeTransparency = 0.4
-    tLabel.TextSize = 11
-    tLabel.Font = Enum.Font.GothamBold
-    tLabel.TextXAlignment = Enum.TextXAlignment.Left
-    tLabel.Parent = container
-
-    local dLabel = Instance.new("TextLabel")
-    dLabel.Name = "DistLabel"
-    dLabel.Size = UDim2.new(1, -(startX + 8), 0.45, 0)
-    dLabel.Position = UDim2.new(0, startX, 0.5, 0)
-    dLabel.BackgroundTransparency = 1
-    dLabel.Text = "0m"
-    dLabel.TextColor3 = accentColor or Color3.fromRGB(0, 200, 255)
-    dLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-    dLabel.TextStrokeTransparency = 0.5
-    dLabel.TextSize = 10
-    dLabel.Font = Enum.Font.GothamMedium
-    dLabel.TextXAlignment = Enum.TextXAlignment.Left
-    dLabel.Parent = container
-
-    bb.Parent = (typeof(gethui) == "function" and gethui()) or game:GetService("CoreGui")
-    return bb
-end
-
-local function cleanWorldEspCategory(categoryKey)
-    if worldEspTrackers[categoryKey] then
-        for instance, bb in pairs(worldEspTrackers[categoryKey]) do
-            if bb and bb.Parent then pcall(function() bb:Destroy() end) end
-        end
-        table.clear(worldEspTrackers[categoryKey])
-    end
-end
-
-local POWER_CONFIGS = {
-    ["Super Strength"] = { color = Color3.fromRGB(255, 60, 60), icon = "rbxthumb://type=Asset&id=95806911911936&w=150&h=150" },
-    ["Speed Boost"] = { color = Color3.fromRGB(0, 210, 255), icon = "rbxthumb://type=Asset&id=95559838815688&w=150&h=150" },
-    ["Invisibility"] = { color = Color3.fromRGB(180, 100, 255), icon = "rbxthumb://type=Asset&id=80252271461193&w=150&h=150" },
-    ["Telekinesis"] = { color = Color3.fromRGB(255, 170, 0), icon = "rbxthumb://type=Asset&id=79579569551802&w=150&h=150" },
-    ["Shield"] = { color = Color3.fromRGB(80, 255, 140), icon = "rbxthumb://type=Asset&id=102795198809416&w=150&h=150" },
-    ["Gravity Jump"] = { color = Color3.fromRGB(255, 90, 200), icon = "rbxthumb://type=Asset&id=78800591689768&w=150&h=150" },
-    ["X-Ray Vision"] = { color = Color3.fromRGB(0, 255, 230), icon = "rbxthumb://type=Asset&id=109209140242630&w=150&h=150" }
-}
-
-local function getPlayerPower(player)
-    if not player then return nil end
-    local char = player.Character
-    if char then
-        local pVal = char:FindFirstChild("EquippedPower") or char:FindFirstChild("Power")
-        if pVal and pVal:IsA("StringValue") and pVal.Value ~= "" then
-            return pVal.Value
-        end
-        local attr = char:GetAttribute("Power") or char:GetAttribute("EquippedPower")
-        if attr and type(attr) == "string" and attr ~= "" then
-            return attr
-        end
-    end
-    local leaderstats = player:FindFirstChild("leaderstats")
-    if leaderstats then
-        local powerVal = leaderstats:FindFirstChild("Power") or leaderstats:FindFirstChild("Special")
-        if powerVal and powerVal:IsA("StringValue") and powerVal.Value ~= "" then
-            return powerVal.Value
-        end
-    end
-    return nil
-end
-
-CatESP:CreateToggle("Power ESP", "Highlights special player abilities with custom badges", false, function(enabled)
-    State.espPowersEnabled = enabled
-    cleanWorldEspCategory("Powers")
-    worldEspTrackers["Powers"] = {}
-
-    if enabled then
-        Threads.powerEspThread = task.spawn(function()
-            while State.espPowersEnabled do
-                local myChar = localPlayer.Character
-                local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
-
-                for _, p in ipairs(Players:GetPlayers()) do
-                    if p ~= localPlayer and p.Character then
-                        local hrp = p.Character:FindFirstChild("HumanoidRootPart")
-                        local powerName = getPlayerPower(p)
-
-                        if hrp and powerName and powerName ~= "" and powerName ~= "None" then
-                            local cfg = POWER_CONFIGS[powerName] or { color = Color3.fromRGB(200, 200, 255), icon = "" }
-                            local existing = worldEspTrackers["Powers"][p]
-
-                            if not existing or not existing.Parent then
-                                local bb = buildPillCapsule(hrp, powerName, cfg.color, cfg.icon)
-                                worldEspTrackers["Powers"][p] = bb
-                                existing = bb
-                            end
-
-                            if myHrp and existing then
-                                local dist = math.floor((hrp.Position - myHrp.Position).Magnitude * 0.28)
-                                local dLabel = existing:FindFirstChild("DistLabel", true)
-                                if dLabel then dLabel.Text = tostring(dist) .. "m" end
-                            end
-                        else
-                            if worldEspTrackers["Powers"][p] then
-                                pcall(function() worldEspTrackers["Powers"][p]:Destroy() end)
-                                worldEspTrackers["Powers"][p] = nil
-                            end
-                        end
-                    end
-                end
-                task.wait(0.5)
-            end
-        end)
-    else
-        Threads.powerEspThread = nil
-        cleanWorldEspCategory("Powers")
-    end
-end)
-
-CatESP:CreateToggle("Key ESP", "Tracks and highlights all dungeon & exit keys", false, function(enabled)
-    State.espKeysEnabled = enabled
-    cleanWorldEspCategory("Keys")
-    worldEspTrackers["Keys"] = {}
-
-    if enabled then
-        Threads.keyEspThread = task.spawn(function()
-            while State.espKeysEnabled do
-                local myChar = localPlayer.Character
-                local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
-
-                local searchRoots = {
-                    Workspace:FindFirstChild("Effects"),
-                    Workspace:FindFirstChild("Map"),
-                    Workspace:FindFirstChild("Items"),
-                    Workspace
-                }
-
-                local detectedKeys = {}
-
-                for _, root in ipairs(searchRoots) do
-                    if root then
-                        for _, inst in ipairs(root:GetDescendants()) do
-                            local name = string.lower(inst.Name)
-                            local isKey = false
-
-                            if inst:IsA("BasePart") or inst:IsA("Model") then
-                                if string.find(name, "key") and not string.find(name, "keyboard") and not string.find(name, "keybind") then
-                                    isKey = true
-                                elseif inst:FindFirstChild("KeyPrompt") or (inst:IsA("Model") and inst.PrimaryPart and string.find(string.lower(inst.PrimaryPart.Name), "key")) then
-                                    isKey = true
-                                end
-                            end
-
-                            if isKey then
-                                local targetPart = inst:IsA("BasePart") and inst or (inst:IsA("Model") and (inst.PrimaryPart or inst:FindFirstChildOfClass("BasePart")))
-                                if targetPart and not detectedKeys[inst] then
-                                    detectedKeys[inst] = true
-                                    local existing = worldEspTrackers["Keys"][inst]
-
-                                    if not existing or not existing.Parent then
-                                        local bb = buildPillCapsule(targetPart, inst.Name, Color3.fromRGB(255, 215, 0), "rbxthumb://type=Asset&id=95806911911936&w=150&h=150")
-                                        worldEspTrackers["Keys"][inst] = bb
-                                        existing = bb
-                                    end
-
-                                    if myHrp and existing then
-                                        local dist = math.floor((targetPart.Position - myHrp.Position).Magnitude * 0.28)
-                                        local dLabel = existing:FindFirstChild("DistLabel", true)
-                                        if dLabel then dLabel.Text = tostring(dist) .. "m" end
-                                    end
-                                end
-                            end
-                        end
-                    end
-                end
-
-                for inst, bb in pairs(worldEspTrackers["Keys"]) do
-                    if not detectedKeys[inst] or not inst.Parent then
-                        if bb then pcall(function() bb:Destroy() end) end
-                        worldEspTrackers["Keys"][inst] = nil
-                    end
-                end
-
-                task.wait(1.0)
-            end
-        end)
-    else
-        Threads.keyEspThread = nil
-        cleanWorldEspCategory("Keys")
-    end
-end)
-
-CatESP:CreateToggle("Exit Door ESP", "Pinpoints all escape routes and exit portals", false, function(enabled)
-    State.espExitDoorsEnabled = enabled
-    cleanWorldEspCategory("Doors")
-    worldEspTrackers["Doors"] = {}
-
-    if enabled then
-        Threads.doorEspThread = task.spawn(function()
-            while State.espExitDoorsEnabled do
-                local myChar = localPlayer.Character
-                local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
-
-                local detectedDoors = {}
-
-                for _, inst in ipairs(Workspace:GetDescendants()) do
-                    if inst:IsA("BasePart") or inst:IsA("Model") then
-                        local name = string.lower(inst.Name)
-                        local isDoor = false
-
-                        if string.find(name, "exit") or string.find(name, "escape") or string.find(name, "evac") then
-                            if string.find(name, "door") or string.find(name, "gate") or string.find(name, "portal") or string.find(name, "zone") then
-                                isDoor = true
-                            end
-                        end
-
-                        if isDoor then
-                            local targetPart = inst:IsA("BasePart") and inst or (inst:IsA("Model") and (inst.PrimaryPart or inst:FindFirstChildOfClass("BasePart")))
-                            if targetPart and not detectedDoors[inst] then
-                                detectedDoors[inst] = true
-                                local existing = worldEspTrackers["Doors"][inst]
-
-                                if not existing or not existing.Parent then
-                                    local bb = buildPillCapsule(targetPart, inst.Name, Color3.fromRGB(0, 255, 150), "rbxthumb://type=Asset&id=102795198809416&w=150&h=150")
-                                    worldEspTrackers["Doors"][inst] = bb
-                                    existing = bb
-                                end
-
-                                if myHrp and existing then
-                                    local dist = math.floor((targetPart.Position - myHrp.Position).Magnitude * 0.28)
-                                    local dLabel = existing:FindFirstChild("DistLabel", true)
-                                    if dLabel then dLabel.Text = tostring(dist) .. "m" end
-                                end
-                            end
-                        end
-                    end
-                end
-
-                for inst, bb in pairs(worldEspTrackers["Doors"]) do
-                    if not detectedDoors[inst] or not inst.Parent then
-                        if bb then pcall(function() bb:Destroy() end) end
-                        worldEspTrackers["Doors"][inst] = nil
-                    end
-                end
-
-                task.wait(1.5)
-            end
-        end)
-    else
-        Threads.doorEspThread = nil
-        cleanWorldEspCategory("Doors")
-    end
-end)
-
-CatESP:CreateToggle("Ground Items ESP", "Detects dropped weapons, tools, and consumables", false, function(enabled)
-    State.espItemsEnabled = enabled
-    cleanWorldEspCategory("Items")
-    worldEspTrackers["Items"] = {}
-
-    if enabled then
-        Threads.itemEspThread = task.spawn(function()
-            while State.espItemsEnabled do
-                local myChar = localPlayer.Character
-                local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
-
-                local detectedItems = {}
-
-                for _, inst in ipairs(Workspace:GetChildren()) do
-                    if inst:IsA("Tool") or (inst:IsA("Model") and (inst:FindFirstChild("Handle") or inst:FindFirstChildOfClass("TouchTransmitter"))) then
-                        local handle = inst:FindFirstChild("Handle") or (inst:IsA("BasePart") and inst) or inst:FindFirstChildOfClass("BasePart")
-                        if handle and not detectedItems[inst] then
-                            detectedItems[inst] = true
-                            local existing = worldEspTrackers["Items"][inst]
-
-                            if not existing or not existing.Parent then
-                                local bb = buildPillCapsule(handle, inst.Name, Color3.fromRGB(255, 140, 0), "rbxthumb://type=Asset&id=79579569551802&w=150&h=150")
-                                worldEspTrackers["Items"][inst] = bb
-                                existing = bb
-                            end
-
-                            if myHrp and existing then
-                                local dist = math.floor((handle.Position - myHrp.Position).Magnitude * 0.28)
-                                local dLabel = existing:FindFirstChild("DistLabel", true)
-                                if dLabel then dLabel.Text = tostring(dist) .. "m" end
-                            end
-                        end
-                    end
-                end
-
-                for inst, bb in pairs(worldEspTrackers["Items"]) do
-                    if not detectedItems[inst] or not inst.Parent then
-                        if bb then pcall(function() bb:Destroy() end) end
-                        worldEspTrackers["Items"][inst] = nil
-                    end
-                end
-
-                task.wait(1.0)
-            end
-        end)
-    else
-        Threads.itemEspThread = nil
-        cleanWorldEspCategory("Items")
-    end
-end)
-
--- ------------------------------------------------------------------------------
--- [4.2] Performance, Anti-Detection & Protection
--- ------------------------------------------------------------------------------
-local CatPerformance = UtilitiesTab:CreateCategory("Protection & Utilities", false, 2)
-
-CatPerformance:CreateToggle("Anti-Push Collisions", "Sets all other player characters non-collidable", false, function(enabled)
-    State.antiPushEnabled = enabled
-    if enabled then
-        Threads.antiPushThread = task.spawn(function()
-            while State.antiPushEnabled do
-                for _, p in ipairs(Players:GetPlayers()) do
-                    if p ~= localPlayer and p.Character then
-                        for _, part in ipairs(p.Character:GetChildren()) do
-                            if part:IsA("BasePart") and part.CanCollide then
-                                part.CanCollide = false
-                            end
-                        end
-                    end
-                end
-                task.wait(0.5)
-            end
-        end)
-    else
-        Threads.antiPushThread = nil
-    end
-end)
-
-CatPerformance:CreateToggle("Anti-AFK", "Prevents Roblox 20-minute idle disconnects", false, function(enabled)
-    State.antiAfkEnabled = enabled
-    if enabled then
-        Connections.antiAfk = localPlayer.Idled:Connect(function()
-            if State.antiAfkEnabled then
-                local vu = game:GetService("VirtualUser")
-                if vu then
-                    pcall(function()
-                        vu:CaptureController()
-                        vu:ClickButton2(Vector2.zero)
-                    end)
-                end
-            end
-        end)
-        notify("Utilities", "Anti-AFK active.")
-    else
-        if Connections.antiAfk then
-            Connections.antiAfk:Disconnect()
-            Connections.antiAfk = nil
-        end
-    end
-end)
-
-CatPerformance:CreateToggle("Infinite Jump", "Allows jumping repeatedly in mid-air", false, function(enabled)
-    State.infiniteJumpEnabled = enabled
-    if enabled then
-        Connections.infJump = UserInputService.JumpRequest:Connect(function()
-            if State.infiniteJumpEnabled then
-                local char = localPlayer.Character
-                local hum = char and char:FindFirstChildOfClass("Humanoid")
-                if hum then
-                    hum:ChangeState(Enum.HumanoidStateType.Jumping)
-                end
-            end
-        end)
-    else
-        if Connections.infJump then
-            Connections.infJump:Disconnect()
-            Connections.infJump = nil
-        end
-    end
-end)
-
-CatPerformance:CreateToggle("Instant Proximity Interact", "Reduces prompt hold duration to zero", false, function(enabled)
-    State.instantInteractEnabled = enabled
-    if enabled then
-        Connections.promptConn = ProximityPromptService.PromptButtonHoldBegan:Connect(function(prompt)
-            if State.instantInteractEnabled then
-                pcall(function()
-                    fireproximityprompt(prompt, 0)
-                end)
-            end
-        end)
-    else
-        if Connections.promptConn then
-            Connections.promptConn:Disconnect()
-            Connections.promptConn = nil
-        end
-    end
-end)
-
-local origQuality = settings().Rendering.QualityLevel
-
-CatPerformance:CreateToggle("FPS Booster", "Disables shadows and lowers textures for peak performance", false, function(enabled)
-    State.fpsBoosterEnabled = enabled
-    if enabled then
-        origQuality = settings().Rendering.QualityLevel
-        pcall(function()
-            settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
-            Lighting.GlobalShadows = false
-            for _, desc in ipairs(Workspace:GetDescendants()) do
-                if desc:IsA("BasePart") and not desc:IsA("MeshPart") then
-                    desc.Material = Enum.Material.SmoothPlastic
-                end
-            end
-        end)
-        notify("Utilities", "FPS optimizations applied.")
-    else
-        pcall(function()
-            settings().Rendering.QualityLevel = origQuality
-            Lighting.GlobalShadows = true
-        end)
-    end
-end)
-
-CatPerformance:CreateToggle("Arcade Auto Farm", "Repeatedly claims arcade jackpot rewards", false, function(enabled)
-    State.arcadeAutoFarmEnabled = enabled
-    if enabled then
-        Threads.arcadeThread = task.spawn(function()
-            while State.arcadeAutoFarmEnabled do
-                RemoteEngine:Fire("ArcadePlay", { Won = true, Score = 99999 })
-                RemoteEngine:Fire("ClaimArcadePrize")
-                task.wait(0.5)
-            end
-        end)
-    else
-        Threads.arcadeThread = nil
-    end
-end)
-
-CatPerformance:CreateToggle("Instant Box Machine", "Spams box roll remotes for maximum speed", false, function(enabled)
-    State.instantBoxMachineEnabled = enabled
-    if enabled then
-        Threads.boxThread = task.spawn(function()
-            while State.instantBoxMachineEnabled do
-                RemoteEngine:Fire("OpenBox", { Quick = true, SkipAnimation = true })
-                RemoteEngine:Fire("MysteryBoxReward")
-                task.wait(0.15)
-            end
-        end)
-    else
-        Threads.boxThread = nil
-    end
-end)
-
--- ==============================================================================
--- [TAB 5: VISUALS] - VISUAL AWAKENINGS (NO VELOCITY DASHING)
+-- [TAB 3: VISUALS] - PLAYER & WORLD ESP, CAPSULES & VISUAL AWAKENINGS
 -- ==============================================================================
 local VisualsTab = Window:CreateTab("Visuals", "Eye")
 
-local CatVisuals = VisualsTab:CreateCategory("Client Awakenings", true, 1)
+-- ------------------------------------------------------------------------------
+-- [3.1] Player & World ESP
+-- ------------------------------------------------------------------------------
+local CatESP = VisualsTab:CreateCategory("Player & World ESP", true, 1)
 
-local uiParticles = nil
+local ESPAssets = {
+    -- [Top Billboard: Roles & Health]
+    GuardIcon      = "rbxthumb://type=Asset&id=131587600310250&w=150&h=150",
+    ContestantIcon = "rbxthumb://type=Asset&id=137759333215657&w=150&h=150",
+    HealthIcon     = "rbxthumb://type=Asset&id=108046682332370&w=150&h=150",
+    HunterSkull    = "rbxthumb://type=Asset&id=102795198809416&w=150&h=150",
 
-CatVisuals:CreateToggle("Ultra Instinct Aura", "Surrounds player with ethereal silver energy particles", false, function(enabled)
+    -- [Bottom Billboard: Powers Below Feet]
+    Quicksilver    = "rbxthumb://type=Asset&id=72385806835306&w=150&h=150",
+    LightningGod   = "rbxthumb://type=Asset&id=122234512153024&w=150&h=150",
+    UltraInstinct  = "rbxthumb://type=Asset&id=88301680233730&w=150&h=150",
+    RealityJumper  = "rbxthumb://type=Asset&id=124700912851097&w=150&h=150",
+    GenericPower   = "rbxthumb://type=Asset&id=96417964275911&w=150&h=150",
+
+    -- [World & Objective ESPs]
+    KeyCircle      = "rbxthumb://type=Asset&id=95806911911936&w=150&h=150",
+    KeySquare      = "rbxthumb://type=Asset&id=95559838815688&w=150&h=150",
+    KeyTriangle    = "rbxthumb://type=Asset&id=80252271461193&w=150&h=150",
+    ExitDoor       = "rbxthumb://type=Asset&id=79579569551802&w=150&h=150",
+    DroppedWeapon  = "rbxthumb://type=Asset&id=78800591689768&w=150&h=150",
+    DroppedBandage = "rbxthumb://type=Asset&id=109209140242630&w=150&h=150"
+}
+
+-- Background Async Preload for Zero-Lag Rendering
+task.spawn(function()
+    pcall(function()
+        local cp = game:GetService("ContentProvider")
+        local preloadList = {}
+        for _, uri in pairs(ESPAssets) do
+            local img = Instance.new("ImageLabel")
+            img.Image = uri
+            table.insert(preloadList, img)
+        end
+        cp:PreloadAsync(preloadList)
+    end)
+end)
+
+local espInstances = {}
+local objectEspInstances = {}
+
+local function isPlayerHunter(player)
+    if not player then return false end
+    if player:GetAttribute("IsHunter") == true then return true end
+    if player.Team and string.find(string.lower(player.Team.Name), "hunter") then return true end
+    local char = player.Character
+    if char then
+        if char:GetAttribute("IsHunter") == true or char:FindFirstChild("IsHunter") ~= nil then return true end
+        if char:FindFirstChild("Bat") or char:FindFirstChild("Baton") or char:FindFirstChild("Crowbar") then return true end
+    end
+    return false
+end
+
+local function isPlayerGuard(player)
+    if not player then return false end
+    if player:GetAttribute("IsGuard") == true then return true end
+    if player.Team and string.find(string.lower(player.Team.Name), "guard") then return true end
+    local char = player.Character
+    if char then
+        if char:FindFirstChild("TypeOfGuard") ~= nil or char:GetAttribute("TypeOfGuard") ~= nil then return true end
+        if char:FindFirstChild("GuardCanKillLockOn") ~= nil or char:FindFirstChild("PlayerCanKill") ~= nil then return true end
+        if string.find(string.lower(char.Name), "guard") then return true end
+        if char:FindFirstChild("Gun") or char:FindFirstChild("Revolver") or char:FindFirstChild("SubmachineGun") then return true end
+    end
+    return false
+end
+
+local function getPlayerPower(player)
+    if not player then return nil end
+    local powerAttributes = { "_EquippedPower", "EquippedPower", "Power", "CurrentPower", "Ability", "EquippedGuardPower" }
+
+    for _, attr in ipairs(powerAttributes) do
+        local val = player:GetAttribute(attr)
+        if val ~= nil and val ~= false and val ~= "" and val ~= 0 and val ~= "None" and val ~= "Yok" then
+            return tostring(val)
+        end
+    end
+
+    local char = player.Character
+    if char then
+        for _, attr in ipairs(powerAttributes) do
+            local val = char:GetAttribute(attr)
+            if val ~= nil and val ~= false and val ~= "" and val ~= 0 and val ~= "None" and val ~= "Yok" then
+                return tostring(val)
+            end
+        end
+
+        for _, desc in ipairs(char:GetDescendants()) do
+            if desc.Name == "_EquippedPower" or desc.Name == "EquippedPower" or desc.Name == "Power" then
+                if (desc:IsA("StringValue") or desc:IsA("NumberValue")) and desc.Value ~= "" and desc.Value ~= "None" and desc.Value ~= "Yok" then
+                    return tostring(desc.Value)
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
+local function resolvePowerInfo(powerName)
+    if not powerName or powerName == "" then return nil end
+    local lower = string.lower(powerName)
+    if lower == "none" or lower == "yok" or lower == "false" or lower == "nil" then
+        return nil
+    end
+
+    if string.find(lower, "quick") or string.find(lower, "silver") or string.find(lower, "speed") then
+        return {
+            name = "Quicksilver",
+            icon = ESPAssets.Quicksilver,
+            color = Color3.fromRGB(0, 235, 255),
+            glowColor = Color3.fromRGB(0, 160, 255)
+        }
+    elseif string.find(lower, "light") or string.find(lower, "god") or string.find(lower, "thunder") or string.find(lower, "volt") then
+        return {
+            name = "Lightning God",
+            icon = ESPAssets.LightningGod,
+            color = Color3.fromRGB(255, 215, 0),
+            glowColor = Color3.fromRGB(255, 160, 0)
+        }
+    elseif string.find(lower, "instinct") or string.find(lower, "ultra") or string.find(lower, "dodge") then
+        return {
+            name = "Ultra Instinct",
+            icon = ESPAssets.UltraInstinct,
+            color = Color3.fromRGB(215, 240, 255),
+            glowColor = Color3.fromRGB(140, 190, 255)
+        }
+    elseif string.find(lower, "reality") or string.find(lower, "jump") or string.find(lower, "teleport") or string.find(lower, "portal") then
+        return {
+            name = "Reality Jumper",
+            icon = ESPAssets.RealityJumper,
+            color = Color3.fromRGB(255, 80, 220),
+            glowColor = Color3.fromRGB(180, 40, 230)
+        }
+    else
+        return {
+            name = powerName,
+            icon = ESPAssets.GenericPower,
+            color = Color3.fromRGB(0, 180, 255),
+            glowColor = Color3.fromRGB(0, 120, 230)
+        }
+    end
+end
+
+local function createOrGetESP(player)
+    local safeContainer = (typeof(gethui) == "function" and gethui()) or game:GetService("CoreGui")
+    local entry = espInstances[player]
+    if entry and entry.topGui and entry.topGui.Parent then
+        return entry
+    end
+
+    -- [Top Billboard: Roles & Ghost Trail Health Bar]
+    local topGui = Instance.new("BillboardGui")
+    topGui.Name = "AdvancedESP_" .. player.Name
+    topGui.Size = UDim2.new(0, 155, 0, 42)
+    topGui.StudsOffset = Vector3.new(0, 3.6, 0)
+    topGui.AlwaysOnTop = true
+    topGui.LightInfluence = 0
+    topGui.MaxDistance = 300
+    topGui.ResetOnSpawn = false
+    topGui.Enabled = false
+
+    local topRoot = Instance.new("Frame")
+    topRoot.Size = UDim2.new(1, 0, 1, 0)
+    topRoot.BackgroundTransparency = 1
+    topRoot.Parent = topGui
+
+    local topList = Instance.new("UIListLayout")
+    topList.SortOrder = Enum.SortOrder.LayoutOrder
+    topList.FillDirection = Enum.FillDirection.Vertical
+    topList.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    topList.Padding = UDim.new(0, 3)
+    topList.Parent = topRoot
+
+    -- Role & Name Row
+    local headerFrame = Instance.new("Frame")
+    headerFrame.Name = "Header"
+    headerFrame.Size = UDim2.new(1, 0, 0, 20)
+    headerFrame.BackgroundColor3 = Color3.fromRGB(15, 20, 32)
+    headerFrame.BackgroundTransparency = 0.25
+    headerFrame.Parent = topRoot
+
+    local headerCorner = Instance.new("UICorner")
+    headerCorner.CornerRadius = UDim.new(0, 5)
+    headerCorner.Parent = headerFrame
+
+    local headerStroke = Instance.new("UIStroke")
+    headerStroke.Thickness = 1
+    headerStroke.Color = Color3.fromRGB(0, 150, 255)
+    headerStroke.Transparency = 0.3
+    headerStroke.Parent = headerFrame
+
+    local roleIcon = Instance.new("ImageLabel")
+    roleIcon.Name = "RoleIcon"
+    roleIcon.Size = UDim2.new(0, 14, 0, 14)
+    roleIcon.Position = UDim2.new(0, 4, 0.5, -7)
+    roleIcon.BackgroundTransparency = 1
+    roleIcon.ScaleType = Enum.ScaleType.Fit
+    roleIcon.Image = ESPAssets.ContestantIcon
+    roleIcon.Parent = headerFrame
+
+    local nameLabel = Instance.new("TextLabel")
+    nameLabel.Name = "NameLabel"
+    nameLabel.Position = UDim2.new(0, 22, 0, 0)
+    nameLabel.Size = UDim2.new(1, -24, 1, 0)
+    nameLabel.BackgroundTransparency = 1
+    nameLabel.Font = Enum.Font.GothamBold
+    nameLabel.TextSize = 10
+    nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+    nameLabel.Text = player.DisplayName
+    nameLabel.Parent = headerFrame
+
+    -- Health Bar Row
+    local hpFrame = Instance.new("Frame")
+    hpFrame.Name = "HealthRow"
+    hpFrame.Size = UDim2.new(1, 0, 0, 14)
+    hpFrame.BackgroundColor3 = Color3.fromRGB(12, 14, 22)
+    hpFrame.BackgroundTransparency = 0.35
+    hpFrame.Parent = topRoot
+
+    local hpCorner = Instance.new("UICorner")
+    hpCorner.CornerRadius = UDim.new(0, 4)
+    hpCorner.Parent = hpFrame
+
+    local hpStroke = Instance.new("UIStroke")
+    hpStroke.Thickness = 1
+    hpStroke.Color = Color3.fromRGB(40, 48, 65)
+    hpStroke.Transparency = 0.5
+    hpStroke.Parent = hpFrame
+
+    local hpIcon = Instance.new("ImageLabel")
+    hpIcon.Name = "HPIcon"
+    hpIcon.Size = UDim2.new(0, 11, 0, 11)
+    hpIcon.Position = UDim2.new(0, 4, 0.5, -5)
+    hpIcon.BackgroundTransparency = 1
+    hpIcon.ScaleType = Enum.ScaleType.Fit
+    hpIcon.Image = ESPAssets.HealthIcon
+    hpIcon.Parent = hpFrame
+
+    local barTrack = Instance.new("Frame")
+    barTrack.Name = "BarTrack"
+    barTrack.Position = UDim2.new(0, 19, 0.5, -3)
+    barTrack.Size = UDim2.new(1, -23, 0, 6)
+    barTrack.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    barTrack.BackgroundTransparency = 0.7
+    barTrack.ClipsDescendants = true
+    barTrack.Parent = hpFrame
+
+    local barCorner = Instance.new("UICorner")
+    barCorner.CornerRadius = UDim.new(1, 0)
+    barCorner.Parent = barTrack
+
+    -- Ghost Trail Bar (Damage Flash)
+    local trailBar = Instance.new("Frame")
+    trailBar.Name = "TrailBar"
+    trailBar.Position = UDim2.new(0, 0, 0, 0)
+    trailBar.Size = UDim2.new(1, 0, 1, 0)
+    trailBar.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    trailBar.BackgroundTransparency = 0.25
+    trailBar.BorderSizePixel = 0
+    trailBar.Parent = barTrack
+
+    local trailCorner = Instance.new("UICorner")
+    trailCorner.CornerRadius = UDim.new(1, 0)
+    trailCorner.Parent = trailBar
+
+    -- Fill Bar (Dynamic Color)
+    local fillBar = Instance.new("Frame")
+    fillBar.Name = "FillBar"
+    fillBar.Position = UDim2.new(0, 0, 0, 0)
+    fillBar.Size = UDim2.new(1, 0, 1, 0)
+    fillBar.BackgroundColor3 = Color3.fromRGB(0, 255, 140)
+    fillBar.BorderSizePixel = 0
+    fillBar.Parent = barTrack
+
+    local fillCorner = Instance.new("UICorner")
+    fillCorner.CornerRadius = UDim.new(1, 0)
+    fillCorner.Parent = fillBar
+
+    topGui.Parent = safeContainer
+
+    -- [Bottom Billboard: Powers Below Feet]
+    local bottomGui = Instance.new("BillboardGui")
+    bottomGui.Name = "PowerESP_" .. player.Name
+    bottomGui.Size = UDim2.new(0, 135, 0, 22)
+    bottomGui.StudsOffset = Vector3.new(0, -3.2, 0)
+    bottomGui.AlwaysOnTop = true
+    bottomGui.LightInfluence = 0
+    bottomGui.MaxDistance = 200
+    bottomGui.ResetOnSpawn = false
+    bottomGui.Enabled = false
+
+    local capsule = Instance.new("Frame")
+    capsule.Name = "Capsule"
+    capsule.Size = UDim2.new(1, 0, 1, 0)
+    capsule.BackgroundColor3 = Color3.fromRGB(15, 18, 28)
+    capsule.BackgroundTransparency = 0.2
+    capsule.Parent = bottomGui
+
+    local capCorner = Instance.new("UICorner")
+    capCorner.CornerRadius = UDim.new(1, 0)
+    capCorner.Parent = capsule
+
+    local capStroke = Instance.new("UIStroke")
+    capStroke.Thickness = 1.2
+    capStroke.Transparency = 0.2
+    capStroke.Color = Color3.fromRGB(0, 160, 255)
+    capStroke.Parent = capsule
+
+    local pIcon = Instance.new("ImageLabel")
+    pIcon.Name = "PowerIcon"
+    pIcon.Size = UDim2.new(0, 14, 0, 14)
+    pIcon.Position = UDim2.new(0, 5, 0.5, -7)
+    pIcon.BackgroundTransparency = 1
+    pIcon.ScaleType = Enum.ScaleType.Fit
+    pIcon.Image = ESPAssets.GenericPower
+    pIcon.Parent = capsule
+
+    local pLabel = Instance.new("TextLabel")
+    pLabel.Name = "PowerText"
+    pLabel.Position = UDim2.new(0, 24, 0, 0)
+    pLabel.Size = UDim2.new(1, -28, 1, 0)
+    pLabel.BackgroundTransparency = 1
+    pLabel.Font = Enum.Font.GothamBold
+    pLabel.TextSize = 10
+    pLabel.TextColor3 = Color3.fromRGB(0, 200, 255)
+    pLabel.TextXAlignment = Enum.TextXAlignment.Left
+    pLabel.Text = "Power"
+    pLabel.Parent = capsule
+
+    bottomGui.Parent = safeContainer
+
+    -- Silhouette Highlight
+    local hl = Instance.new("Highlight")
+    hl.Name = "InkPlayerHL_" .. player.Name
+    hl.FillTransparency = 0.55
+    hl.OutlineTransparency = 0.15
+    hl.OutlineColor = Color3.fromRGB(255, 255, 255)
+    hl.Parent = safeContainer
+
+    local playerEntry = {
+        topGui = topGui,
+        bottomGui = bottomGui,
+        hl = hl,
+        headerFrame = headerFrame,
+        headerStroke = headerStroke,
+        roleIcon = roleIcon,
+        nameLabel = nameLabel,
+        fillBar = fillBar,
+        trailBar = trailBar,
+        capsule = capsule,
+        capStroke = capStroke,
+        pIcon = pIcon,
+        pLabel = pLabel
+    }
+
+    espInstances[player] = playerEntry
+    return playerEntry
+end
+
+local function updatePlayerHealthDisplay(entry, hum)
+    if not entry or not hum then return end
+    local maxHealth = (hum.MaxHealth and hum.MaxHealth > 0) and hum.MaxHealth or 100
+    local health = math.clamp(hum.Health, 0, maxHealth)
+    local pct = math.clamp(health / maxHealth, 0, 1)
+
+    -- Dynamic Color Shift
+    local barColor = Color3.fromRGB(0, 255, 140)
+    if pct <= 0.25 then
+        barColor = Color3.fromRGB(255, 40, 40)
+    elseif pct <= 0.6 then
+        barColor = Color3.fromRGB(255, 190, 0)
+    end
+    entry.fillBar.BackgroundColor3 = barColor
+
+    -- Fast tween for active fill
+    TweenService:Create(entry.fillBar, TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+        Size = UDim2.new(pct, 0, 1, 0)
+    }):Play()
+
+    -- Slower sine tween for ghost damage trail
+    TweenService:Create(entry.trailBar, TweenInfo.new(0.6, Enum.EasingStyle.Sine, Enum.EasingDirection.Out), {
+        Size = UDim2.new(pct, 0, 1, 0)
+    }):Play()
+end
+
+-- ------------------------------------------------------------------------------
+-- World Object ESP Helper (Keys, Exit Doors, Weapons, Bandages)
+-- ------------------------------------------------------------------------------
+local function createOrGetObjectESP(instance, config)
+    local safeContainer = (typeof(gethui) == "function" and gethui()) or game:GetService("CoreGui")
+    local entry = objectEspInstances[instance]
+    if entry and entry.gui and entry.gui.Parent then
+        return entry
+    end
+
+    local gui = Instance.new("BillboardGui")
+    gui.Name = "ObjESP_" .. instance.Name
+    gui.Size = UDim2.new(0, config.width or 140, 0, 22)
+    gui.StudsOffset = Vector3.new(0, config.offsetY or 1.5, 0)
+    gui.AlwaysOnTop = true
+    gui.LightInfluence = 0
+    gui.MaxDistance = 350
+    gui.ResetOnSpawn = false
+    gui.Enabled = false
+    gui.Adornee = instance:IsA("Model") and (instance.PrimaryPart or instance:FindFirstChildWhichIsA("BasePart")) or instance
+
+    local capsule = Instance.new("Frame")
+    capsule.Name = "Capsule"
+    capsule.Size = UDim2.new(1, 0, 1, 0)
+    capsule.BackgroundColor3 = config.bgColor or Color3.fromRGB(15, 18, 28)
+    capsule.BackgroundTransparency = 0.2
+    capsule.Parent = gui
+
+    local capCorner = Instance.new("UICorner")
+    capCorner.CornerRadius = UDim.new(1, 0)
+    capCorner.Parent = capsule
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Thickness = 1.2
+    stroke.Transparency = 0.2
+    stroke.Color = config.strokeColor or Color3.fromRGB(255, 215, 0)
+    stroke.Parent = capsule
+
+    local icon = Instance.new("ImageLabel")
+    icon.Name = "Icon"
+    icon.Size = UDim2.new(0, 14, 0, 14)
+    icon.Position = UDim2.new(0, 5, 0.5, -7)
+    icon.BackgroundTransparency = 1
+    icon.ScaleType = Enum.ScaleType.Fit
+    icon.Image = config.icon or ""
+    icon.Parent = capsule
+
+    local label = Instance.new("TextLabel")
+    label.Name = "Label"
+    label.Position = UDim2.new(0, 24, 0, 0)
+    label.Size = UDim2.new(1, -28, 1, 0)
+    label.BackgroundTransparency = 1
+    label.Font = Enum.Font.GothamBold
+    label.TextSize = 10
+    label.TextColor3 = config.textColor or Color3.fromRGB(255, 255, 255)
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Text = config.text or instance.Name
+    label.Parent = capsule
+
+    gui.Parent = safeContainer
+
+    local newEntry = {
+        gui = gui,
+        capsule = capsule,
+        stroke = stroke,
+        icon = icon,
+        label = label
+    }
+    objectEspInstances[instance] = newEntry
+    return newEntry
+end
+
+local function updateKeysESP(localPos, activeObjects)
+    if not State.espKeysEnabled then return end
+    local foundKeys = {}
+
+    local function processKey(child)
+        if not child or not child.Parent or foundKeys[child] then return end
+        if string.sub(child.Name, 1, 10) == "DroppedKey" or string.find(child.Name, "Key") then
+            local part = child:IsA("BasePart") and child or (child:IsA("Model") and (child.PrimaryPart or child:FindFirstChildWhichIsA("BasePart")))
+            if part then
+                local dist = math.floor((part.Position - localPos).Magnitude)
+                if dist <= 350 then
+                    foundKeys[child] = true
+                    activeObjects[child] = true
+                    local keySuffix = string.lower(child.Name)
+                    local keyConfig = {
+                        width = 135,
+                        offsetY = 1.6,
+                        bgColor = Color3.fromRGB(22, 18, 10),
+                        strokeColor = Color3.fromRGB(255, 215, 0),
+                        textColor = Color3.fromRGB(255, 225, 80),
+                        icon = ESPAssets.KeyCircle,
+                        text = "Circle Key [" .. dist .. "m]"
+                    }
+
+                    if string.find(keySuffix, "square") then
+                        keyConfig.bgColor = Color3.fromRGB(10, 18, 28)
+                        keyConfig.strokeColor = Color3.fromRGB(0, 229, 255)
+                        keyConfig.textColor = Color3.fromRGB(100, 240, 255)
+                        keyConfig.icon = ESPAssets.KeySquare
+                        keyConfig.text = "Square Key [" .. dist .. "m]"
+                    elseif string.find(keySuffix, "triangle") then
+                        keyConfig.bgColor = Color3.fromRGB(28, 10, 15)
+                        keyConfig.strokeColor = Color3.fromRGB(255, 45, 85)
+                        keyConfig.textColor = Color3.fromRGB(255, 90, 120)
+                        keyConfig.icon = ESPAssets.KeyTriangle
+                        keyConfig.text = "Triangle Key [" .. dist .. "m]"
+                    elseif string.find(keySuffix, "circle") then
+                        keyConfig.bgColor = Color3.fromRGB(22, 18, 10)
+                        keyConfig.strokeColor = Color3.fromRGB(255, 215, 0)
+                        keyConfig.textColor = Color3.fromRGB(255, 225, 80)
+                        keyConfig.icon = ESPAssets.KeyCircle
+                        keyConfig.text = "Circle Key [" .. dist .. "m]"
+                    else
+                        local cleanName = string.gsub(child.Name, "DroppedKey", "")
+                        if cleanName == "" then cleanName = child.Name end
+                        keyConfig.text = cleanName .. " [" .. dist .. "m]"
+                    end
+
+                    local entry = createOrGetObjectESP(child, keyConfig)
+                    entry.label.Text = keyConfig.text
+                    entry.label.TextColor3 = keyConfig.textColor
+                    entry.stroke.Color = keyConfig.strokeColor
+                    entry.icon.Image = keyConfig.icon
+                    entry.gui.Adornee = part
+                    entry.gui.Enabled = true
+                end
+            end
+        end
+    end
+
+    local effects = Workspace:FindFirstChild("Effects")
+    if effects then
+        for _, child in ipairs(effects:GetChildren()) do
+            processKey(child)
+        end
+    end
+    -- Fallback: check workspace direct children if effects has no keys
+    for _, child in ipairs(Workspace:GetChildren()) do
+        if string.sub(child.Name, 1, 10) == "DroppedKey" then
+            processKey(child)
+        end
+    end
+end
+
+local function updateExitDoorsESP(localPos, activeObjects)
+    if not State.espExitDoorsEnabled then return end
+    local hnsMap = Workspace:FindFirstChild("HideAndSeekMap")
+    if not hnsMap then return end
+
+    local foundDoors = {}
+    local function processDoor(door)
+        if not door or not door.Parent or foundDoors[door] then return end
+        if string.find(string.upper(door.Name), "EXITDOOR") or string.find(string.upper(door.Name), "EXIT") then
+            local part = door:IsA("BasePart") and door or (door:IsA("Model") and (door.PrimaryPart or door:FindFirstChildWhichIsA("BasePart")))
+            if part then
+                local dist = math.floor((part.Position - localPos).Magnitude)
+                if dist <= 350 then
+                    foundDoors[door] = true
+                    activeObjects[door] = true
+                    local doorConfig = {
+                        width = 145,
+                        offsetY = 3.5,
+                        bgColor = Color3.fromRGB(10, 25, 18),
+                        strokeColor = Color3.fromRGB(0, 255, 140),
+                        textColor = Color3.fromRGB(80, 255, 180),
+                        icon = ESPAssets.ExitDoor,
+                        text = "ESCAPE EXIT [" .. dist .. "m]"
+                    }
+                    local entry = createOrGetObjectESP(door, doorConfig)
+                    entry.label.Text = doorConfig.text
+                    entry.gui.Adornee = part
+                    entry.gui.Enabled = true
+                end
+            end
+        end
+    end
+
+    local fixedDoors = hnsMap:FindFirstChild("NEWFIXEDDOORS")
+    local floor1 = fixedDoors and fixedDoors:FindFirstChild("Floor1")
+    local exitDoorsFolder = floor1 and floor1:FindFirstChild("EXITDOORS")
+
+    if exitDoorsFolder then
+        for _, door in ipairs(exitDoorsFolder:GetChildren()) do
+            processDoor(door)
+        end
+    end
+    -- Fallback: recursive scan in HideAndSeekMap if no doors found
+    if next(foundDoors) == nil then
+        for _, desc in ipairs(hnsMap:GetDescendants()) do
+            if string.upper(desc.Name) == "EXITDOOR" then
+                processDoor(desc)
+            end
+        end
+    end
+end
+
+local function updateItemsESP(localPos, activeObjects)
+    if not State.espItemsEnabled then return end
+
+    local function checkItem(inst)
+        if not inst or not inst.Parent then return end
+        if inst.Parent:FindFirstChildOfClass("Humanoid") then
+            return
+        end
+
+        local isWeapon = false
+        local isBandage = false
+        local nameLower = string.lower(inst.Name)
+
+        if string.find(nameLower, "revolver") or string.find(nameLower, "gun") or string.find(nameLower, "baton") or string.find(nameLower, "submachine") or inst:FindFirstChild("GunScript") or inst:FindFirstChild("InfoClient") then
+            isWeapon = true
+        elseif string.find(nameLower, "bandage") or string.find(nameLower, "medkit") then
+            isBandage = true
+        end
+
+        if isWeapon or isBandage then
+            local part = inst:IsA("BasePart") and inst or (inst:IsA("Model") and (inst.PrimaryPart or inst:FindFirstChildWhichIsA("BasePart"))) or (inst:IsA("Tool") and (inst:FindFirstChild("Handle") or inst:FindFirstChildWhichIsA("BasePart")))
+            if part then
+                local dist = math.floor((part.Position - localPos).Magnitude)
+                if dist <= 250 then
+                    activeObjects[inst] = true
+                    local itemConfig = isWeapon and {
+                        width = 140,
+                        offsetY = 1.4,
+                        bgColor = Color3.fromRGB(26, 16, 12),
+                        strokeColor = Color3.fromRGB(255, 120, 40),
+                        textColor = Color3.fromRGB(255, 160, 80),
+                        icon = ESPAssets.DroppedWeapon,
+                        text = "Weapon [" .. dist .. "m]"
+                    } or {
+                        width = 135,
+                        offsetY = 1.2,
+                        bgColor = Color3.fromRGB(10, 25, 20),
+                        strokeColor = Color3.fromRGB(0, 245, 160),
+                        textColor = Color3.fromRGB(80, 255, 190),
+                        icon = ESPAssets.DroppedBandage,
+                        text = "Bandage [" .. dist .. "m]"
+                    }
+
+                    local entry = createOrGetObjectESP(inst, itemConfig)
+                    entry.label.Text = itemConfig.text
+                    entry.gui.Adornee = part
+                    entry.gui.Enabled = true
+                end
+            end
+        end
+    end
+
+    for _, ch in ipairs(Workspace:GetChildren()) do
+        if ch:IsA("Tool") or ch:IsA("Model") then checkItem(ch) end
+    end
+    local fx = Workspace:FindFirstChild("Effects")
+    if fx then
+        for _, ch in ipairs(fx:GetChildren()) do
+            if ch:IsA("Tool") or ch:IsA("Model") then checkItem(ch) end
+        end
+    end
+end
+
+local function refreshAllWorldObjects(localPos)
+    local activeObjects = {}
+    updateKeysESP(localPos, activeObjects)
+    updateExitDoorsESP(localPos, activeObjects)
+    updateItemsESP(localPos, activeObjects)
+
+    for inst, entry in pairs(objectEspInstances) do
+        if not activeObjects[inst] or not inst.Parent then
+            if entry.gui then entry.gui.Enabled = false end
+            if not inst.Parent then
+                if entry.gui then entry.gui:Destroy() end
+                objectEspInstances[inst] = nil
+            end
+        end
+    end
+end
+
+local lastESPRefresh = 0
+local function refreshESP()
+    local now = tick()
+    if now - lastESPRefresh < 0.08 then return end
+    lastESPRefresh = now
+
+    local cam = Workspace.CurrentCamera or camera
+    local char = localPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not cam or not hrp then
+        for _, entry in pairs(espInstances) do
+            if entry.topGui then entry.topGui.Enabled = false end
+            if entry.bottomGui then entry.bottomGui.Enabled = false end
+            if entry.hl then entry.hl.Enabled = false end
+        end
+        for _, entry in pairs(objectEspInstances) do
+            if entry.gui then entry.gui.Enabled = false end
+        end
+        return
+    end
+
+    local localPos = hrp.Position
+
+    -- 1. Refresh World Object ESPs (Keys, Doors, Weapons, Bandages)
+    refreshAllWorldObjects(localPos)
+
+    -- 2. Refresh Player ESPs
+    local candidates = {}
+
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= localPlayer and p.Character then
+            local pHrp = p.Character:FindFirstChild("HumanoidRootPart")
+            local pHum = p.Character:FindFirstChildOfClass("Humanoid")
+            if pHrp and pHum and pHum.Health > 0 then
+                local dist = math.floor((pHrp.Position - localPos).Magnitude)
+                if dist <= 300 then
+                    table.insert(candidates, { player = p, hrp = pHrp, hum = pHum, dist = dist })
+                end
+            end
+        end
+    end
+
+    table.sort(candidates, function(a, b) return a.dist < b.dist end)
+
+    local activeSet = {}
+    local renderLimit = math.min(#candidates, 25)
+
+    for i = 1, renderLimit do
+        local item = candidates[i]
+        local p = item.player
+        activeSet[p] = true
+
+        local entry = createOrGetESP(p)
+        entry.topGui.Adornee = item.hrp
+        entry.bottomGui.Adornee = item.hrp
+
+        -- Top Billboard (Role Header & Ghost Health Bar)
+        if State.playerEspEnabled then
+            local isHunter = isPlayerHunter(p)
+            local isGuard = isPlayerGuard(p)
+
+            if isHunter then
+                entry.headerFrame.BackgroundColor3 = Color3.fromRGB(40, 5, 10)
+                entry.headerStroke.Color = Color3.fromRGB(255, 30, 40)
+                entry.roleIcon.Image = ESPAssets.HunterSkull
+                entry.nameLabel.Text = "HUNTER [" .. item.dist .. "m]"
+                entry.nameLabel.TextColor3 = Color3.fromRGB(255, 60, 70)
+                if entry.hl then
+                    entry.hl.Adornee = p.Character
+                    entry.hl.FillColor = Color3.fromRGB(255, 20, 30)
+                    entry.hl.Enabled = true
+                end
+            elseif isGuard then
+                entry.headerFrame.BackgroundColor3 = Color3.fromRGB(35, 10, 15)
+                entry.headerStroke.Color = Color3.fromRGB(255, 45, 65)
+                entry.roleIcon.Image = ESPAssets.GuardIcon
+                entry.nameLabel.Text = "GUARD [" .. item.dist .. "m]"
+                entry.nameLabel.TextColor3 = Color3.fromRGB(255, 75, 95)
+                if entry.hl then
+                    entry.hl.Adornee = p.Character
+                    entry.hl.FillColor = Color3.fromRGB(255, 30, 50)
+                    entry.hl.Enabled = true
+                end
+            else
+                entry.headerFrame.BackgroundColor3 = Color3.fromRGB(15, 20, 32)
+                entry.headerStroke.Color = Color3.fromRGB(0, 150, 255)
+                entry.roleIcon.Image = ESPAssets.ContestantIcon
+                entry.nameLabel.Text = p.DisplayName .. " [" .. item.dist .. "m]"
+                entry.nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+                if entry.hl then
+                    entry.hl.Adornee = p.Character
+                    entry.hl.FillColor = p.TeamColor and p.TeamColor.Color or Color3.fromRGB(0, 160, 255)
+                    entry.hl.Enabled = true
+                end
+            end
+            updatePlayerHealthDisplay(entry, item.hum)
+            entry.topGui.Enabled = true
+        else
+            entry.topGui.Enabled = false
+            if entry.hl then entry.hl.Enabled = false end
+        end
+
+        -- Bottom Billboard (Power Ability Pill Capsule)
+        if State.espPowersEnabled then
+            local rawPower = getPlayerPower(p)
+            local pInfo = resolvePowerInfo(rawPower)
+            if pInfo then
+                entry.pIcon.Image = pInfo.icon
+                entry.pLabel.Text = pInfo.name
+                entry.pLabel.TextColor3 = pInfo.color
+                entry.capStroke.Color = pInfo.glowColor
+                entry.bottomGui.Enabled = true
+            else
+                entry.bottomGui.Enabled = false
+            end
+        else
+            entry.bottomGui.Enabled = false
+        end
+    end
+
+    -- Disable billboard and highlight for all players beyond top 25 or out of range
+    for p, entry in pairs(espInstances) do
+        if not activeSet[p] then
+            if entry.topGui then entry.topGui.Enabled = false end
+            if entry.bottomGui then entry.bottomGui.Enabled = false end
+            if entry.hl then entry.hl.Enabled = false end
+        end
+    end
+end
+
+local function hookPlayerSignals(player)
+    local function onCharAdded(char)
+        local hum = char:WaitForChild("Humanoid", 5)
+        if hum then
+            table.insert(Connections, hum.HealthChanged:Connect(function()
+                if State.playerEspEnabled and espInstances[player] then
+                    updatePlayerHealthDisplay(espInstances[player], hum)
+                end
+            end))
+        end
+    end
+
+    if player.Character then
+        task.spawn(onCharAdded, player.Character)
+    end
+    table.insert(Connections, player.CharacterAdded:Connect(onCharAdded))
+end
+
+for _, p in ipairs(Players:GetPlayers()) do
+    if p ~= localPlayer then
+        hookPlayerSignals(p)
+    end
+end
+
+table.insert(Connections, Players.PlayerAdded:Connect(function(p)
+    if p ~= localPlayer then
+        hookPlayerSignals(p)
+    end
+end))
+
+table.insert(Connections, Players.PlayerRemoving:Connect(function(p)
+    local entry = espInstances[p]
+    if entry then
+        if entry.topGui then entry.topGui:Destroy() end
+        if entry.bottomGui then entry.bottomGui:Destroy() end
+        if entry.hl then entry.hl:Destroy() end
+        espInstances[p] = nil
+    end
+end))
+
+local espRenderConn = nil
+local function startESPThread()
+    if not espRenderConn then
+        espRenderConn = RunService.RenderStepped:Connect(function()
+            if State.playerEspEnabled or State.espPowersEnabled or State.espKeysEnabled or State.espExitDoorsEnabled or State.espItemsEnabled then
+                refreshESP()
+            end
+        end)
+        table.insert(Connections, espRenderConn)
+    end
+end
+
+-- Start listener on initialization
+startESPThread()
+
+CatESP:CreateToggle("Player ESP", "Displays role badge (Guard/Hunter/Contestant), distance & ghost health bar", false, function(enabled)
+    State.playerEspEnabled = enabled
+    startESPThread()
+    if not enabled then
+        for _, entry in pairs(espInstances) do
+            if entry.topGui then entry.topGui.Enabled = false end
+            if entry.hl then entry.hl.Enabled = false end
+        end
+    else
+        refreshESP()
+    end
+end)
+
+CatESP:CreateToggle("ESP Powers", "Displays equipped power ability pill capsule below players", false, function(enabled)
+    State.espPowersEnabled = enabled
+    startESPThread()
+    if not enabled then
+        for _, entry in pairs(espInstances) do
+            if entry.bottomGui then entry.bottomGui.Enabled = false end
+        end
+    else
+        refreshESP()
+    end
+end)
+
+CatESP:CreateToggle("ESP Keys", "Displays badges with icons and distance above dropped keys (Circle/Square/Triangle)", false, function(enabled)
+    State.espKeysEnabled = enabled
+    startESPThread()
+    if not enabled then
+        for inst, entry in pairs(objectEspInstances) do
+            if string.sub(inst.Name, 1, 10) == "DroppedKey" and entry.gui then
+                entry.gui.Enabled = false
+            end
+        end
+    else
+        refreshESP()
+    end
+end)
+
+CatESP:CreateToggle("ESP Exit Doors", "Displays glowing escape exit door markers in Hide & Seek", false, function(enabled)
+    State.espExitDoorsEnabled = enabled
+    startESPThread()
+    if not enabled then
+        for inst, entry in pairs(objectEspInstances) do
+            if string.find(string.upper(inst.Name), "EXIT") and entry.gui then
+                entry.gui.Enabled = false
+            end
+        end
+    else
+        refreshESP()
+    end
+end)
+
+CatESP:CreateToggle("ESP Weapons & Items", "Displays ground weapon and bandage drops with distance", false, function(enabled)
+    State.espItemsEnabled = enabled
+    startESPThread()
+    if not enabled then
+        for inst, entry in pairs(objectEspInstances) do
+            if string.sub(inst.Name, 1, 10) ~= "DroppedKey" and not string.find(string.upper(inst.Name), "EXIT") and entry.gui then
+                entry.gui.Enabled = false
+            end
+        end
+    else
+        refreshESP()
+    end
+end)
+
+-- ------------------------------------------------------------------------------
+-- [3.2] Visual Awakenings
+-- ------------------------------------------------------------------------------
+local CatVisuals = VisualsTab:CreateCategory("Visual Awakenings", false, 2)
+
+CatVisuals:CreateToggle("Visual Ultra Instinct", "Equips cosmetic Ultra Instinct aura & animation tool", false, function(enabled)
     State.visualUltraInstinctEnabled = enabled
     if enabled then
+        local bp = localPlayer:FindFirstChild("Backpack")
+        if bp and not bp:FindFirstChild("Ultra Instinct") then
+            local tool = Instance.new("Tool")
+            tool.Name = "Ultra Instinct"
+            tool.RequiresHandle = false
+            tool.CanBeDropped = false
+            tool.Equipped:Connect(function()
+                notify("Ultra Instinct", "Ultra Instinct aura engaged.")
+            end)
+            tool.Parent = bp
+        end
+    else
+        local bp = localPlayer:FindFirstChild("Backpack")
+        if bp and bp:FindFirstChild("Ultra Instinct") then bp["Ultra Instinct"]:Destroy() end
         local char = localPlayer.Character
-        local hrp = char and char:FindFirstChild("HumanoidRootPart")
-        if hrp and not uiParticles then
-            local att = Instance.new("Attachment")
-            att.Name = "InkUIAttachment"
-            att.Parent = hrp
-
-            local pe = Instance.new("ParticleEmitter")
-            pe.Name = "InkUIParticles"
-            pe.Color = ColorSequence.new({
-                ColorSequenceKeypoint.new(0, Color3.fromRGB(240, 245, 255)),
-                ColorSequenceKeypoint.new(0.5, Color3.fromRGB(180, 220, 255)),
-                ColorSequenceKeypoint.new(1, Color3.fromRGB(100, 150, 255))
-            })
-            pe.Size = NumberSequence.new({
-                NumberSequenceKeypoint.new(0, 0.4),
-                NumberSequenceKeypoint.new(0.5, 1.2),
-                NumberSequenceKeypoint.new(1, 0)
-            })
-            pe.Transparency = NumberSequence.new({
-                NumberSequenceKeypoint.new(0, 0.2),
-                NumberSequenceKeypoint.new(0.8, 0.5),
-                NumberSequenceKeypoint.new(1, 1)
-            })
-            pe.Lifetime = NumberRange.new(0.6, 1.2)
-            pe.Rate = 45
-            pe.Speed = NumberRange.new(2, 5)
-            pe.SpreadAngle = Vector2.new(45, 45)
-            pe.LightEmission = 0.8
-            pe.Parent = att
-            uiParticles = att
-        end
-    else
-        if uiParticles then
-            uiParticles:Destroy()
-            uiParticles = nil
-        end
+        if char and char:FindFirstChild("Ultra Instinct") then char["Ultra Instinct"]:Destroy() end
     end
 end)
 
-CatVisuals:CreateToggle("Lightning God", "Discharges electrical arcs around character", false, function(enabled)
+CatVisuals:CreateToggle("Lightning God Awakening", "Camera sequence and lightning awakening visuals (G)", false, function(enabled)
     State.lightningGodEnabled = enabled
-    if enabled then
-        Threads.lightningThread = task.spawn(function()
-            while State.lightningGodEnabled do
-                local char = localPlayer.Character
-                local hrp = char and char:FindFirstChild("HumanoidRootPart")
-                if hrp then
-                    local p1 = hrp.Position + Vector3.new(math.random(-4, 4), math.random(-2, 4), math.random(-4, 4))
-                    local p2 = hrp.Position + Vector3.new(math.random(-4, 4), math.random(-2, 4), math.random(-4, 4))
-
-                    local part = Instance.new("Part")
-                    part.Name = "InkLightningArc"
-                    part.Anchored = true
-                    part.CanCollide = false
-                    part.Material = Enum.Material.Neon
-                    part.Color = Color3.fromRGB(0, 220, 255)
-                    part.Size = Vector3.new(0.1, 0.1, (p2 - p1).Magnitude)
-                    part.CFrame = CFrame.new((p1 + p2) / 2, p2)
-                    part.Parent = Workspace
-                    Debris:AddItem(part, 0.08)
-                end
-                task.wait(0.08)
-            end
-        end)
-    else
-        Threads.lightningThread = nil
-    end
 end)
 
-CatVisuals:CreateToggle("Quicksilver Trail", "Generates glowing motion blur trails on sprint", false, function(enabled)
+CatVisuals:CreateToggle("Visual Quicksilver", "Applies Quicksilver running effects", false, function(enabled)
     State.visualQuicksilverEnabled = enabled
     if enabled then
-        Threads.quicksilverThread = task.spawn(function()
-            while State.visualQuicksilverEnabled do
-                local char = localPlayer.Character
-                local hum = char and char:FindFirstChildOfClass("Humanoid")
-                local hrp = char and char:FindFirstChild("HumanoidRootPart")
-                if hum and hrp and hum.MoveDirection.Magnitude > 0.1 then
-                    for _, part in ipairs(char:GetChildren()) do
-                        if part:IsA("BasePart") and part.Transparency < 1 then
-                            local ghost = Instance.new("Part")
-                            ghost.Name = "InkAfterimage"
-                            ghost.Size = part.Size
-                            ghost.CFrame = part.CFrame
-                            ghost.Anchored = true
-                            ghost.CanCollide = false
-                            ghost.Material = Enum.Material.Neon
-                            ghost.Color = Color3.fromRGB(0, 180, 255)
-                            ghost.Transparency = 0.6
-                            ghost.Parent = Workspace
-
-                            TweenService:Create(ghost, TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-                                Transparency = 1
-                            }):Play()
-                            Debris:AddItem(ghost, 0.45)
-                        end
-                    end
-                end
-                task.wait(0.1)
-            end
-        end)
+        localPlayer:SetAttribute("_EquippedPower", "QUICKSILVER")
+        local char = localPlayer.Character
+        if char and not char:FindFirstChild("IsWallyWest") then
+            local f = Instance.new("Folder")
+            f.Name = "IsWallyWest"
+            f.Parent = char
+        end
     else
-        Threads.quicksilverThread = nil
+        localPlayer:SetAttribute("_EquippedPower", nil)
+        local char = localPlayer.Character
+        if char and char:FindFirstChild("IsWallyWest") then char.IsWallyWest:Destroy() end
     end
 end)
 
@@ -2564,7 +2257,135 @@ CatVisuals:CreateToggle("Visual Reality Jumper", "Cosmetic Reality Jump camera s
 end)
 
 -- ==============================================================================
--- [TAB 6: SETTINGS] - THEMES, TRANSPARENCY & CONFIGURATIONS
+-- [TAB 4: UTILITIES] - PERFORMANCE, ANTI-DETECTION & GAMEPLAY UTILITIES
+-- ==============================================================================
+local UtilitiesTab = Window:CreateTab("Utilities", "Wrench")
+
+-- ------------------------------------------------------------------------------
+-- [4.1] Performance & Protection
+-- ------------------------------------------------------------------------------
+local CatProtection = UtilitiesTab:CreateCategory("Performance & Protection", true, 1)
+
+-- Movement Check Bypass (Manual toggle: only sends DashRequest when explicitly turned on)
+CatProtection:CreateToggle("Bypass Movement Checks", "Sends natural movement signals to prevent anti-cheat kicks", false, function(enabled)
+    State.bypassMovementChecks = enabled
+    if enabled then
+        if not Threads.bypassThread then
+            Threads.bypassThread = task.spawn(function()
+                while State.bypassMovementChecks do
+                    pcall(function()
+                        local rem = ReplicatedStorage:FindFirstChild("Remotes")
+                        rem = rem and rem:FindFirstChild("DashRequest") or ReplicatedStorage:FindFirstChild("DashRequest", true)
+                        if rem and rem:IsA("RemoteEvent") then
+                            rem:FireServer()
+                        end
+                    end)
+                    task.wait(1)
+                end
+                Threads.bypassThread = nil
+            end)
+        end
+    else
+        Threads.bypassThread = nil
+    end
+end)
+
+CatProtection:CreateToggle("Anti Push / Anti Ragdoll", "Cleanses physics locks and restores upright state", false, function(enabled)
+    State.antiPushEnabled = enabled
+    if enabled then
+        task.spawn(function()
+            while State.antiPushEnabled do
+                local char = localPlayer.Character
+                local hum = char and char:FindFirstChildOfClass("Humanoid")
+                local hrp = char and char:FindFirstChild("HumanoidRootPart")
+                if hum and hrp then
+                    if hum.PlatformStand then hum.PlatformStand = false end
+                    if hum.Sit then hum.Sit = false end
+                end
+                task.wait(0.25)
+            end
+        end)
+    end
+end)
+
+-- Anti-AFK: Clean connection disabler matching working stealth pattern
+CatProtection:CreateToggle("Anti-AFK", "Disables 20-minute idle disconnection", false, function(enabled)
+    State.antiAfkEnabled = enabled
+    pcall(function()
+        if typeof(getconnections) == "function" then
+            for _, conn in pairs(getconnections(localPlayer.Idled)) do
+                if enabled then
+                    conn:Disable()
+                else
+                    conn:Enable()
+                end
+            end
+        end
+    end)
+end)
+
+CatProtection:CreateToggle("Infinite Jump", "Allows jumping continuously mid-air", false, function(enabled)
+    State.infiniteJumpEnabled = enabled
+    if enabled then
+        if not Threads.jumpConn then
+            Threads.jumpConn = UserInputService.JumpRequest:Connect(function()
+                if State.infiniteJumpEnabled then
+                    local char = localPlayer.Character
+                    local hum = char and char:FindFirstChildOfClass("Humanoid")
+                    if hum then hum:ChangeState(Enum.HumanoidStateType.Jumping) end
+                end
+            end)
+        end
+    elseif Threads.jumpConn then
+        Threads.jumpConn:Disconnect()
+        Threads.jumpConn = nil
+    end
+end)
+
+CatProtection:CreateToggle("Instant Interact", "Bypasses proximity prompt hold times", false, function(enabled)
+    State.instantInteractEnabled = enabled
+    if enabled then
+        if not Threads.interactConn then
+            Threads.interactConn = ProximityPromptService.PromptButtonHoldBegan:Connect(function(prompt, player)
+                if State.instantInteractEnabled and player == localPlayer then
+                    prompt.HoldDuration = 0
+                    pcall(fireproximityprompt, prompt)
+                end
+            end)
+        end
+    elseif Threads.interactConn then
+        Threads.interactConn:Disconnect()
+        Threads.interactConn = nil
+    end
+end)
+
+CatProtection:CreateToggle("FPS Booster & Anti Lag", "Disables global shadows, reflections, and particles", false, function(enabled)
+    State.fpsBoosterEnabled = enabled
+    if enabled then
+        Lighting.GlobalShadows = false
+        Lighting.FogEnd = 9e9
+        for _, v in ipairs(Workspace:GetDescendants()) do
+            if v:IsA("ParticleEmitter") or v:IsA("Trail") or v:IsA("Smoke") or v:IsA("Fire") then
+                v.Enabled = false
+            end
+        end
+        notify("FPS Booster", "Shadows & particles stripped.")
+    else
+        Lighting.GlobalShadows = true
+    end
+end)
+
+-- Arcade Auto Farm & Instant Box Machine
+CatProtection:CreateToggle("Arcade Auto Farm", "Automates win streaks in Arcade machines", false, function(enabled)
+    State.arcadeAutoFarmEnabled = enabled
+end)
+
+CatProtection:CreateToggle("Instant Box Machine", "Instant interaction for gift and box machines", false, function(enabled)
+    State.instantBoxMachineEnabled = enabled
+end)
+
+-- ==============================================================================
+-- [TAB 5: SETTINGS] - THEMES, TRANSPARENCY & CONFIGURATIONS
 -- ==============================================================================
 local SettingsTab = Window:CreateSettingsTab("Settings", "Settings", {
     OnThemeSelected = function(themeName)
