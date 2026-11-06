@@ -87,7 +87,7 @@ local State = {
     targetLockKey = Enum.KeyCode.Q,
     aimbotTargetLock = false,
     lockedTargetPlayer = nil,
-    aimbotTargetPart = "Head", -- "Head" or "Torso"
+    aimbotTargetPart = "Torso", -- "Torso" (HumanoidRootPart center of mass, matches zipbomb.txt) or "Head"
     showFovEnabled = false,
     aimbotFovRadius = 150,
     autoQTEEnabled = false,
@@ -282,35 +282,24 @@ end
 local function initFovCircle()
     local themeColor = getGuiThemeAccent()
 
-    -- High-performance vector Drawing library (when supported by executor)
-    if typeof(Drawing) == "table" and typeof(Drawing.new) == "function" then
-        pcall(function()
-            fovDrawingCircle = Drawing.new("Circle")
-            fovDrawingCircle.Thickness = 1.5
-            fovDrawingCircle.NumSides = 64
-            fovDrawingCircle.Filled = false
-            fovDrawingCircle.Transparency = 0.85
-            fovDrawingCircle.Color = themeColor
-            fovDrawingCircle.Visible = false
-        end)
-    end
-
-    -- Universal ScreenGui circular frame fallback (mobile/touch & safe executor compatible)
-    if not fovDrawingCircle then
+    -- 1. Universal ScreenGui circular frame (matches zipbomb.txt lines 89-106)
+    -- Guaranteed to render on 100% of executors with IgnoreGuiInset = true and DisplayOrder = 1000000000
+    if not fovGuiCircle then
         local safeParent = (typeof(gethui) == "function" and gethui()) or game:GetService("CoreGui")
         local fovGui = Instance.new("ScreenGui")
         fovGui.Name = HttpService:GenerateGUID(false):gsub("-", "")
         fovGui.ResetOnSpawn = false
-        fovGui.DisplayOrder = 999
+        fovGui.IgnoreGuiInset = true -- True viewport alignment matching zipbomb.txt
+        fovGui.DisplayOrder = 1000000000 -- Displays above all game GUIs
         fovGui.Parent = safeParent
 
         local circleFrame = Instance.new("Frame")
-        circleFrame.Name = "Circle"
+        circleFrame.Name = "FOVCircle"
         circleFrame.AnchorPoint = Vector2.new(0.5, 0.5)
         circleFrame.BackgroundTransparency = 1
-        circleFrame.Size = UDim2.new(0, 300, 0, 300)
-        circleFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
-        circleFrame.Visible = false
+        circleFrame.Size = UDim2.new(0, (State.aimbotFovRadius or 150) * 2, 0, (State.aimbotFovRadius or 150) * 2)
+        circleFrame.Position = UDim2.new(0.5, 0, 0.5, 0) -- Fixed to exact mathematical center
+        circleFrame.Visible = State.showFovEnabled == true
         circleFrame.Parent = fovGui
 
         local corner = Instance.new("UICorner")
@@ -320,10 +309,23 @@ local function initFovCircle()
         fovGuiStroke = Instance.new("UIStroke")
         fovGuiStroke.Thickness = 1.5
         fovGuiStroke.Color = themeColor
-        fovGuiStroke.Transparency = 0.15
+        fovGuiStroke.Transparency = 0.05
         fovGuiStroke.Parent = circleFrame
 
         fovGuiCircle = circleFrame
+    end
+
+    -- 2. Optional Drawing library vector circle
+    if typeof(Drawing) == "table" and typeof(Drawing.new) == "function" and not fovDrawingCircle then
+        pcall(function()
+            fovDrawingCircle = Drawing.new("Circle")
+            fovDrawingCircle.Thickness = 1.5
+            fovDrawingCircle.NumSides = 64
+            fovDrawingCircle.Filled = false
+            fovDrawingCircle.Transparency = 1
+            fovDrawingCircle.Color = themeColor
+            fovDrawingCircle.Visible = State.showFovEnabled == true
+        end)
     end
 end
 
@@ -342,39 +344,33 @@ end
 -- RenderStepped real-time position, radius scale, and theme synchronizer
 RunService.RenderStepped:Connect(function()
     local isVisible = State.showFovEnabled == true
-    if isVisible and not fovDrawingCircle and not fovGuiCircle then
+    if isVisible and not fovGuiCircle then
         initFovCircle()
     end
 
-    if not isVisible then
-        if fovDrawingCircle then
-            pcall(function() fovDrawingCircle.Visible = false end)
-        end
-        if fovGuiCircle then
-            fovGuiCircle.Visible = false
-        end
-        return
-    end
-
     local radius = State.aimbotFovRadius or 150
-    local center = getAimCenter()
+    local cam = Workspace.CurrentCamera or camera
+
+    if fovGuiCircle then
+        fovGuiCircle.Visible = isVisible
+        if isVisible then
+            fovGuiCircle.Size = UDim2.new(0, radius * 2, 0, radius * 2)
+            fovGuiCircle.Position = UDim2.new(0.5, 0, 0.5, 0)
+            if fovGuiStroke then
+                fovGuiStroke.Color = getGuiThemeAccent()
+            end
+        end
+    end
 
     if fovDrawingCircle then
         pcall(function()
-            fovDrawingCircle.Visible = true
-            fovDrawingCircle.Position = center
-            fovDrawingCircle.Radius = radius
-            fovDrawingCircle.Color = getGuiThemeAccent()
+            fovDrawingCircle.Visible = isVisible
+            if isVisible and cam then
+                fovDrawingCircle.Position = cam.ViewportSize / 2
+                fovDrawingCircle.Radius = radius
+                fovDrawingCircle.Color = getGuiThemeAccent()
+            end
         end)
-    end
-
-    if fovGuiCircle then
-        fovGuiCircle.Visible = true
-        fovGuiCircle.Position = UDim2.new(0, center.X, 0, center.Y)
-        fovGuiCircle.Size = UDim2.new(0, radius * 2, 0, radius * 2)
-        if fovGuiStroke then
-            fovGuiStroke.Color = getGuiThemeAccent()
-        end
     end
 end)
 
@@ -449,13 +445,7 @@ end
 local function getAimCenter()
     local cam = Workspace.CurrentCamera or camera
     if not cam then return Vector2.zero end
-    if UserInputService.MouseBehavior == Enum.MouseBehavior.LockCenter then
-        return cam.ViewportSize / 2
-    end
-    local mLoc = UserInputService:GetMouseLocation()
-    if mLoc and (mLoc.X > 0 or mLoc.Y > 0) then
-        return mLoc
-    end
+    -- ALWAYS use the exact mathematical center of the camera viewport for detection math (matches zipbomb.txt)
     return cam.ViewportSize / 2
 end
 
@@ -511,11 +501,13 @@ local function getSmartAimbotTarget(maxFovDistance)
         if isValidAimbotTarget(p, localPlayer) and p.Character then
             local pChar = p.Character
             local pHrp = pChar:FindFirstChild("HumanoidRootPart")
-            local targetPart = (State.aimbotTargetPart == "Torso" and (pChar:FindFirstChild("UpperTorso")
-                or pChar:FindFirstChild("Torso")
-                or pHrp))
-                or pChar:FindFirstChild("Head")
-                or pHrp
+            local targetPart
+            if State.aimbotTargetPart == "Head" then
+                targetPart = pChar:FindFirstChild("Head") or pHrp
+            else
+                -- Default & "Torso": Target HumanoidRootPart (exact body center, matches zipbomb.txt)
+                targetPart = pHrp or pChar:FindFirstChild("Torso") or pChar:FindFirstChild("UpperTorso")
+            end
 
             if targetPart then
                 local screenPos, onScreen = cam:WorldToViewportPoint(targetPart.Position)
@@ -542,11 +534,13 @@ local function getSmartAimbotTarget(maxFovDistance)
         if isValidAimbotTarget(p, localPlayer) then
             local pChar = p.Character
             local pHrp = pChar:FindFirstChild("HumanoidRootPart")
-            local targetPart = (State.aimbotTargetPart == "Torso" and (pChar:FindFirstChild("UpperTorso")
-                or pChar:FindFirstChild("Torso")
-                or pHrp))
-                or pChar:FindFirstChild("Head")
-                or pHrp
+            local targetPart
+            if State.aimbotTargetPart == "Head" then
+                targetPart = pChar:FindFirstChild("Head") or pHrp
+            else
+                -- Default & "Torso": Target HumanoidRootPart (exact body center, matches zipbomb.txt)
+                targetPart = pHrp or pChar:FindFirstChild("Torso") or pChar:FindFirstChild("UpperTorso")
+            end
 
             if targetPart then
                 -- Convert target 3D position to 2D screen coordinate
@@ -2626,16 +2620,31 @@ CatCombatAssist:CreateKeybind("Target Lock Keybind", "Toggle target lock ON or O
     end
 end)
 
-CatCombatAssist:CreateDropdown("Target Part", "Select aimbot target body part", { "Head", "Torso" }, "Head", function(selected)
+CatCombatAssist:CreateDropdown("Target Part", "Select aimbot target body part", { "Torso", "Head" }, "Torso", function(selected)
     State.aimbotTargetPart = selected
 end)
 
 CatCombatAssist:CreateToggle("Show FOV", "Displays visual lock-on circle matching GUI theme color", false, function(enabled)
     State.showFovEnabled = enabled
+    if not fovGuiCircle then
+        initFovCircle()
+    end
+    if fovGuiCircle then
+        fovGuiCircle.Visible = enabled
+    end
+    if fovDrawingCircle then
+        pcall(function() fovDrawingCircle.Visible = enabled end)
+    end
 end)
 
 CatCombatAssist:CreateSlider("FOV Radius", "Scales lock-on search radius and visual FOV circle", 30, 500, 150, function(val)
     State.aimbotFovRadius = val
+    if fovGuiCircle then
+        fovGuiCircle.Size = UDim2.new(0, val * 2, 0, val * 2)
+    end
+    if fovDrawingCircle then
+        pcall(function() fovDrawingCircle.Radius = val end)
+    end
 end)
 
 CatCombatAssist:CreateToggle("Auto QTE Event", "Bypasses quick time events with 100% success", false, function(enabled)
