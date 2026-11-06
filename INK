@@ -150,30 +150,9 @@ local function isCurrentGame(gameName)
     return getCurrentGame() == gameName
 end
 
--- [3.25] Metamethod Hooks (Universal Infinite Stamina)
-if typeof(hookmetamethod) == "function" then
-    local oldNamecall
-    oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
-        local method = getnamecallmethod()
-        local args = {...}
-        if not checkcaller() then
-            if State.infiniteStaminaEnabled and method == "GetAttribute" and (args[1] == "Stamina" or args[1] == "StaminaVal") then
-                return 100
-            end
-        end
-        return oldNamecall(self, ...)
-    end)
-
-    local oldIndex
-    oldIndex = hookmetamethod(game, "__index", function(self, key)
-        if not checkcaller() then
-            if State.infiniteStaminaEnabled and (key == "Stamina" or key == "StaminaVal") and typeof(self) == "Instance" and self:IsA("Model") then
-                return 100
-            end
-        end
-        return oldIndex(self, key)
-    end)
-end
+-- [3.25] Stealth Invariant Verification: Zero Metamethod Hooks
+-- Global DataModel engine metamethod hooks are strictly forbidden to ensure 100% anti-cheat stealth.
+-- All automations (including Infinite Stamina) operate safely via local property & attribute clamping.
 
 -- [3.3] Remote Introspection & Garbage Collection Scanner
 local RemoteEngine = { Cache = {} }
@@ -315,7 +294,7 @@ local function initFovCircle()
     if not fovDrawingCircle then
         local safeParent = (typeof(gethui) == "function" and gethui()) or game:GetService("CoreGui")
         local fovGui = Instance.new("ScreenGui")
-        fovGui.Name = "Syntaxis_FOV_" .. HttpService:GenerateGUID(false)
+        fovGui.Name = HttpService:GenerateGUID(false):gsub("-", "")
         fovGui.ResetOnSpawn = false
         fovGui.DisplayOrder = 999
         fovGui.Parent = safeParent
@@ -343,7 +322,7 @@ local function initFovCircle()
     end
 end
 
-initFovCircle()
+-- Note: initFovCircle() is now strictly lazy-loaded inside RenderStepped only when State.showFovEnabled is true
 
 local function updateFovCircleColor(color)
     color = color or getGuiThemeAccent()
@@ -358,28 +337,38 @@ end
 -- RenderStepped real-time position, radius scale, and theme synchronizer
 RunService.RenderStepped:Connect(function()
     local isVisible = State.showFovEnabled == true
+    if isVisible and not fovDrawingCircle and not fovGuiCircle then
+        initFovCircle()
+    end
+
+    if not isVisible then
+        if fovDrawingCircle then
+            pcall(function() fovDrawingCircle.Visible = false end)
+        end
+        if fovGuiCircle then
+            fovGuiCircle.Visible = false
+        end
+        return
+    end
+
     local radius = State.aimbotFovRadius or 150
     local center = getAimCenter()
 
     if fovDrawingCircle then
         pcall(function()
-            fovDrawingCircle.Visible = isVisible
-            if isVisible then
-                fovDrawingCircle.Position = center
-                fovDrawingCircle.Radius = radius
-                fovDrawingCircle.Color = getGuiThemeAccent()
-            end
+            fovDrawingCircle.Visible = true
+            fovDrawingCircle.Position = center
+            fovDrawingCircle.Radius = radius
+            fovDrawingCircle.Color = getGuiThemeAccent()
         end)
     end
 
     if fovGuiCircle then
-        fovGuiCircle.Visible = isVisible
-        if isVisible then
-            fovGuiCircle.Position = UDim2.new(0, center.X, 0, center.Y)
-            fovGuiCircle.Size = UDim2.new(0, radius * 2, 0, radius * 2)
-            if fovGuiStroke then
-                fovGuiStroke.Color = getGuiThemeAccent()
-            end
+        fovGuiCircle.Visible = true
+        fovGuiCircle.Position = UDim2.new(0, center.X, 0, center.Y)
+        fovGuiCircle.Size = UDim2.new(0, radius * 2, 0, radius * 2)
+        if fovGuiStroke then
+            fovGuiStroke.Color = getGuiThemeAccent()
         end
     end
 end)
@@ -859,19 +848,7 @@ CatDalgona:CreateToggle("Anti-Crack Dalgona", "Clamps crack progress bar and neu
                                     if type(fn) == "function" then
                                         local ok, consts = pcall(getconstants_, fn)
                                         if ok and type(consts) == "table" then
-                                            -- 1. Hook direct failure functions (failed crack / fully cracked)
-                                            local isFailureFunc = false
-                                            for _, c in pairs(consts) do
-                                                if c == "dalgona rework failed crack" or (c == "ShapeName" and table.find(consts, "FullyCracked")) then
-                                                    isFailureFunc = true
-                                                    break
-                                                end
-                                            end
-                                            if isFailureFunc and typeof(hookfunction) == "function" then
-                                                pcall(hookfunction, fn, noop)
-                                            end
-
-                                            -- 2. Neutralize upvalues in wrong click handler
+                                            -- 1. Neutralize upvalues in wrong click handler (100% stealth, zero function hooks)
                                             if table.find(consts, "clicked wrong in dalgona ") and getupvalues_ and setupvalue_ then
                                                 local ok2, upvals = pcall(getupvalues_, fn)
                                                 if ok2 and type(upvals) == "table" then
@@ -1319,17 +1296,8 @@ local function updateGlassBridge()
     end
 end
 
-local function applyGlassCollisionGroup(char)
-    if not char then return end
-    task.spawn(function()
-        task.wait(0.5)
-        for _, desc in ipairs(char:GetDescendants()) do
-            if desc:IsA("BasePart") then
-                pcall(function() desc.CollisionGroup = "LocalPlayerOnly" end)
-            end
-        end
-    end)
-end
+-- Collision groups are preserved as default to prevent physics mismatch kicks.
+-- Safe walkway platforms provide solid footing without modifying character collision groups.
 
 CatGlass:CreateToggle("Glass Bridge ESP", "Highlights safe glass green, delayed orange, and fake red", false, function(enabled)
     State.glassEspEnabled = enabled
@@ -1353,10 +1321,6 @@ end)
 CatGlass:CreateToggle("Fake Safe Glass", "Removes kill touch triggers and spawns walkable platforms", false, function(enabled)
     State.fakeSafeGlassEnabled = enabled
     if enabled then
-        if localPlayer.Character then applyGlassCollisionGroup(localPlayer.Character) end
-        if glassCollisionConn then glassCollisionConn:Disconnect() end
-        glassCollisionConn = localPlayer.CharacterAdded:Connect(applyGlassCollisionGroup)
-
         pcall(updateGlassBridge)
         if not Threads.glassThread then
             Threads.glassThread = task.spawn(function()
@@ -1369,10 +1333,7 @@ CatGlass:CreateToggle("Fake Safe Glass", "Removes kill touch triggers and spawns
         end
         notify("Glass Bridge", "Safe platforms spawned over breakable glass.", 3)
     else
-        if glassCollisionConn then
-            glassCollisionConn:Disconnect()
-            glassCollisionConn = nil
-        end
+-- Cleared safe platforms on toggle disable
         for _, p in pairs(safeWalkwayParts) do
             if p and p.Parent then p:Destroy() end
         end
