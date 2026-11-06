@@ -84,6 +84,8 @@ local State = {
     infiniteAmmoEnabled = false,
     aimbotEnabled = false,
     aimbotTargetPart = "Head", -- "Head" or "Torso"
+    showFovEnabled = false,
+    aimbotFovRadius = 150,
     autoQTEEnabled = false,
     bandageHelperEnabled = false,
 
@@ -276,6 +278,112 @@ local function setPlayerFrozen(freeze)
     end
 end
 
+-- [3.45] Visual FOV Indicator Engine (Scalable & Theme-Synchronized)
+local fovDrawingCircle = nil
+local fovGuiCircle = nil
+local fovGuiStroke = nil
+
+local function getGuiThemeAccent()
+    if Window and typeof(Window.GetActiveTheme) == "function" then
+        local th = Window:GetActiveTheme()
+        if th and th.Accent then return th.Accent end
+    end
+    if SyntaxisLib and SyntaxisLib.Themes and typeof(SyntaxisLib.Themes.Get) == "function" then
+        local th = SyntaxisLib.Themes:Get(State.themeName or "Sapphire")
+        if th and th.Accent then return th.Accent end
+    end
+    return Color3.fromRGB(0, 160, 255)
+end
+
+local function initFovCircle()
+    local themeColor = getGuiThemeAccent()
+
+    -- High-performance vector Drawing library (when supported by executor)
+    if typeof(Drawing) == "table" and typeof(Drawing.new) == "function" then
+        pcall(function()
+            fovDrawingCircle = Drawing.new("Circle")
+            fovDrawingCircle.Thickness = 1.5
+            fovDrawingCircle.NumSides = 64
+            fovDrawingCircle.Filled = false
+            fovDrawingCircle.Transparency = 0.85
+            fovDrawingCircle.Color = themeColor
+            fovDrawingCircle.Visible = false
+        end)
+    end
+
+    -- Universal ScreenGui circular frame fallback (mobile/touch & safe executor compatible)
+    if not fovDrawingCircle then
+        local safeParent = (typeof(gethui) == "function" and gethui()) or game:GetService("CoreGui")
+        local fovGui = Instance.new("ScreenGui")
+        fovGui.Name = "Syntaxis_FOV_" .. HttpService:GenerateGUID(false)
+        fovGui.ResetOnSpawn = false
+        fovGui.DisplayOrder = 999
+        fovGui.Parent = safeParent
+
+        local circleFrame = Instance.new("Frame")
+        circleFrame.Name = "Circle"
+        circleFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+        circleFrame.BackgroundTransparency = 1
+        circleFrame.Size = UDim2.new(0, 300, 0, 300)
+        circleFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
+        circleFrame.Visible = false
+        circleFrame.Parent = fovGui
+
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = UDim.new(1, 0)
+        corner.Parent = circleFrame
+
+        fovGuiStroke = Instance.new("UIStroke")
+        fovGuiStroke.Thickness = 1.5
+        fovGuiStroke.Color = themeColor
+        fovGuiStroke.Transparency = 0.15
+        fovGuiStroke.Parent = circleFrame
+
+        fovGuiCircle = circleFrame
+    end
+end
+
+initFovCircle()
+
+local function updateFovCircleColor(color)
+    color = color or getGuiThemeAccent()
+    if fovDrawingCircle then
+        pcall(function() fovDrawingCircle.Color = color end)
+    end
+    if fovGuiStroke then
+        fovGuiStroke.Color = color
+    end
+end
+
+-- RenderStepped real-time position, radius scale, and theme synchronizer
+RunService.RenderStepped:Connect(function()
+    local isVisible = State.showFovEnabled == true
+    local radius = State.aimbotFovRadius or 150
+    local center = getAimCenter()
+
+    if fovDrawingCircle then
+        pcall(function()
+            fovDrawingCircle.Visible = isVisible
+            if isVisible then
+                fovDrawingCircle.Position = center
+                fovDrawingCircle.Radius = radius
+                fovDrawingCircle.Color = getGuiThemeAccent()
+            end
+        end)
+    end
+
+    if fovGuiCircle then
+        fovGuiCircle.Visible = isVisible
+        if isVisible then
+            fovGuiCircle.Position = UDim2.new(0, center.X, 0, center.Y)
+            fovGuiCircle.Size = UDim2.new(0, radius * 2, 0, radius * 2)
+            if fovGuiStroke then
+                fovGuiStroke.Color = getGuiThemeAccent()
+            end
+        end
+    end
+end)
+
 -- [3.5] Crosshair & Smart Aimbot Targeting
 local function getAimCenter()
     local cam = Workspace.CurrentCamera or camera
@@ -291,7 +399,7 @@ local function getAimCenter()
 end
 
 local function getSmartAimbotTarget(maxFovDistance)
-    maxFovDistance = maxFovDistance or 350
+    maxFovDistance = maxFovDistance or State.aimbotFovRadius or 150
     local cam = Workspace.CurrentCamera or camera
     local char = localPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
@@ -320,24 +428,6 @@ local function getSmartAimbotTarget(maxFovDistance)
                             bestFovDist = distToCenter
                             bestTarget = p
                         end
-                    end
-                end
-            end
-        end
-    end
-
-    -- Fallback: if no target in crosshair FOV, target closest in 3D distance (< 40 studs)
-    if not bestTarget then
-        local closest3dDist = 40
-        for _, p in ipairs(Players:GetPlayers()) do
-            if p ~= localPlayer and p.Character then
-                local pHrp = p.Character:FindFirstChild("HumanoidRootPart")
-                local pHum = p.Character:FindFirstChildOfClass("Humanoid")
-                if pHrp and pHum and pHum.Health > 0 then
-                    local d = (pHrp.Position - hrp.Position).Magnitude
-                    if d < closest3dDist then
-                        closest3dDist = d
-                        bestTarget = p
                     end
                 end
             end
@@ -2302,7 +2392,7 @@ CatCombatAssist:CreateToggle("Aimbot", "Smoothly locks camera rotation onto clos
                 local hrp = char and char:FindFirstChild("HumanoidRootPart")
                 local cam = Workspace.CurrentCamera or camera
                 if hrp and cam then
-                    local targetPlayer = getSmartAimbotTarget(350)
+                    local targetPlayer = getSmartAimbotTarget(State.aimbotFovRadius or 150)
                     if targetPlayer and targetPlayer.Character then
                         local targetPart = (State.aimbotTargetPart == "Torso" and (targetPlayer.Character:FindFirstChild("UpperTorso")
                             or targetPlayer.Character:FindFirstChild("Torso")
@@ -2323,6 +2413,14 @@ end)
 
 CatCombatAssist:CreateDropdown("Target Part", "Select aimbot target body part", { "Head", "Torso" }, "Head", function(selected)
     State.aimbotTargetPart = selected
+end)
+
+CatCombatAssist:CreateToggle("Show FOV", "Displays visual lock-on circle matching GUI theme color", false, function(enabled)
+    State.showFovEnabled = enabled
+end)
+
+CatCombatAssist:CreateSlider("FOV Radius", "Scales lock-on search radius and visual FOV circle", 30, 500, 150, function(val)
+    State.aimbotFovRadius = val
 end)
 
 CatCombatAssist:CreateToggle("Auto QTE Event", "Bypasses quick time events with 100% success", false, function(enabled)
@@ -2438,25 +2536,25 @@ local CatESP = VisualsTab:CreateCategory("Player & World ESP", true, 1)
 
 local ESPAssets = {
     -- [Top Billboard: Roles & Health]
-    GuardIcon      = "rbxthumb://type=Asset&id=131587600310250&w=150&h=150", -- 1_guard_icon (Image: 83349780085312)
-    ContestantIcon = "rbxthumb://type=Asset&id=137759333215657&w=150&h=150", -- 2_contestant_icon (Image: 132745507722031)
-    HealthIcon     = "rbxthumb://type=Asset&id=108046682332370&w=150&h=150", -- 3_health_icon (Image: 83295663127771)
-    HunterSkull    = "rbxthumb://type=Asset&id=102795198809416&w=150&h=150", -- 13_hunter_skull_icon (Image: 128938040692977)
+    GuardIcon      = "rbxassetid://83349780085312",  -- 1_guard_icon (Image: 83349780085312, Decal: 131587600310250)
+    ContestantIcon = "rbxassetid://132745507722031", -- 2_contestant_icon (Image: 132745507722031, Decal: 137759333215657)
+    HealthIcon     = "rbxassetid://83295663127771",  -- 3_health_icon (Image: 83295663127771, Decal: 108046682332370)
+    HunterSkull    = "rbxassetid://128938040692977", -- 13_hunter_skull_icon (Image: 128938040692977, Decal: 102795198809416)
 
     -- [Bottom Billboard: Powers Below Feet]
-    Quicksilver    = "rbxthumb://type=Asset&id=72385806835306&w=150&h=150", -- 4_quicksilver_icon (Image: 95067897228787)
-    LightningGod   = "rbxthumb://type=Asset&id=122234512153024&w=150&h=150", -- 5_lightning_god_icon (Image: 73304449581599)
-    UltraInstinct  = "rbxthumb://type=Asset&id=88301680233730&w=150&h=150", -- 6_ultra_instinct_icon (Image: 95719331249213)
-    RealityJumper  = "rbxthumb://type=Asset&id=124700912851097&w=150&h=150", -- 7_reality_jumper_icon (Image: 86947520558645)
-    GenericPower   = "rbxthumb://type=Asset&id=96417964275911&w=150&h=150", -- 8_generic_power_icon (Image: 122505047985340)
+    Quicksilver    = "rbxassetid://95067897228787",  -- 4_quicksilver_icon (Image: 95067897228787, Decal: 72385806835306)
+    LightningGod   = "rbxassetid://73304449581599",  -- 5_lightning_god_icon (Image: 73304449581599, Decal: 122234512153024)
+    UltraInstinct  = "rbxassetid://95719331249213",  -- 6_ultra_instinct_icon (Image: 95719331249213, Decal: 88301680233730)
+    RealityJumper  = "rbxassetid://86947520558645",  -- 7_reality_jumper_icon (Image: 86947520558645, Decal: 124700912851097)
+    GenericPower   = "rbxassetid://122505047985340", -- 8_generic_power_icon (Image: 122505047985340, Decal: 96417964275911)
 
     -- [World & Objective ESPs]
-    KeyCircle      = "rbxthumb://type=Asset&id=95806911911936&w=150&h=150", -- 9_circle_key_icon (Image: 81821362057352)
-    KeySquare      = "rbxthumb://type=Asset&id=95559838815688&w=150&h=150", -- 10_square_key_icon (Image: 127252171630183)
-    KeyTriangle    = "rbxthumb://type=Asset&id=80252271461193&w=150&h=150", -- 11_triangle_key_icon (Image: 127092863384256)
-    ExitDoor       = "rbxthumb://type=Asset&id=79579569551802&w=150&h=150", -- 12_exit_door_icon (Image: 112233577388050)
-    DroppedWeapon  = "rbxthumb://type=Asset&id=78800591689768&w=150&h=150", -- 14_weapon_icon (Image: 117770953173846)
-    DroppedBandage = "rbxthumb://type=Asset&id=109209140242630&w=150&h=150" -- 15_bandage_icon (Image: 129437556919042)
+    KeyCircle      = "rbxassetid://81821362057352",  -- 9_circle_key_icon (Image: 81821362057352, Decal: 95806911911936)
+    KeySquare      = "rbxassetid://127252171630183", -- 10_square_key_icon (Image: 127252171630183, Decal: 95559838815688)
+    KeyTriangle    = "rbxassetid://127092863384256", -- 11_triangle_key_icon (Image: 127092863384256, Decal: 80252271461193)
+    ExitDoor       = "rbxassetid://112233577388050", -- 12_exit_door_icon (Image: 112233577388050, Decal: 79579569551802)
+    DroppedWeapon  = "rbxassetid://117770953173846", -- 14_weapon_icon (Image: 117770953173846, Decal: 78800591689768)
+    DroppedBandage = "rbxassetid://129437556919042"  -- 15_bandage_icon (Image: 129437556919042, Decal: 109209140242630)
 }
 
 -- Background Async Preload for Zero-Lag Rendering
@@ -3066,21 +3164,23 @@ local function updateItemsESP(localPos, activeObjects)
                 if dist <= 250 then
                     activeObjects[inst] = true
                     local itemConfig = isWeapon and {
-                        width = 140,
+                        showLabel = false,
+                        iconSize = 22,
                         offsetY = 1.4,
                         bgColor = Color3.fromRGB(26, 16, 12),
                         strokeColor = Color3.fromRGB(255, 120, 40),
                         textColor = Color3.fromRGB(255, 160, 80),
                         icon = ESPAssets.DroppedWeapon,
-                        text = "Weapon [" .. dist .. "m]"
+                        text = ""
                     } or {
-                        width = 135,
+                        showLabel = false,
+                        iconSize = 22,
                         offsetY = 1.2,
                         bgColor = Color3.fromRGB(10, 25, 20),
                         strokeColor = Color3.fromRGB(0, 245, 160),
                         textColor = Color3.fromRGB(80, 255, 190),
                         icon = ESPAssets.DroppedBandage,
-                        text = "Bandage [" .. dist .. "m]"
+                        text = ""
                     }
 
                     local entry = createOrGetObjectESP(inst, itemConfig)
@@ -3558,6 +3658,7 @@ end)
 local SettingsTab = Window:CreateSettingsTab("Settings", "Settings", {
     OnThemeSelected = function(themeName)
         State.themeName = themeName
+        updateFovCircleColor(getGuiThemeAccent())
         notify("Theme", "Theme set to: " .. themeName)
     end,
     OnTransparencyChanged = function(trans)
