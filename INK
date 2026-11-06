@@ -150,9 +150,22 @@ local function isCurrentGame(gameName)
     return getCurrentGame() == gameName
 end
 
--- [3.25] Stealth Invariant Verification: Zero Metamethod Hooks
--- Global DataModel engine metamethod hooks are strictly forbidden to ensure 100% anti-cheat stealth.
--- All automations (including Infinite Stamina) operate safely via local property & attribute clamping.
+-- [3.25] Safe Namecall Interceptor (Infinite Stamina via GetAttribute)
+-- Strictly hooks __namecall for GetAttribute("Stamina") only (matches ref4 line 1042).
+-- Zero __index hooks to maintain 100% anti-cheat stealth across all property lookups.
+if typeof(hookmetamethod) == "function" then
+    local oldNamecall
+    oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+        local method = getnamecallmethod()
+        local args = {...}
+        if not checkcaller() then
+            if State.infiniteStaminaEnabled and method == "GetAttribute" and (args[1] == "Stamina" or args[1] == "StaminaVal") then
+                return 100
+            end
+        end
+        return oldNamecall(self, ...)
+    end)
+end
 
 -- [3.3] Remote Introspection & Garbage Collection Scanner
 local RemoteEngine = { Cache = {} }
@@ -821,9 +834,13 @@ CatDalgona:CreateToggle("One Click Complete", "Teleports outline hitboxes direct
     end
 end)
 
-CatDalgona:CreateToggle("Anti-Crack Dalgona", "Clamps crack progress bar and neutralizes breakage", false, function(enabled)
+CatDalgona:CreateToggle("Anti-Crack Dalgona", "Neutralizes breakage failure functions and clamps crack progress", false, function(enabled)
     State.antiCrackDalgonaEnabled = enabled
     if enabled then
+        -- 1. Free Lighter Attribute (heated needle stops stress cracking)
+        pcall(function() localPlayer:SetAttribute("HasLighter", true) end)
+
+        -- 2. Failure Function Neutralizer & Hitbox Magnet Loop (Ported from ref1 lines 1715-1820)
         if not Threads.dalgonaCrackLoop then
             Threads.dalgonaCrackLoop = task.spawn(function()
                 local getupvalues_ = debug and (debug.getupvalues or debug.get_upvalues) or getupvalues
@@ -833,7 +850,7 @@ CatDalgona:CreateToggle("Anti-Crack Dalgona", "Clamps crack progress bar and neu
 
                 while State.antiCrackDalgonaEnabled do
                     if isCurrentGame("Dalgona") or (localPlayer:FindFirstChild("PlayerGui") and localPlayer.PlayerGui:FindFirstChild("DalgonaUI")) then
-                        -- Full Garbage Collection Scanner & Failure Function Neutralizer (Ported from Reference lines 1730-1785)
+                        -- Full Garbage Collection Scanner & Failure Neutralizer (ref1 lines 1730-1795)
                         pcall(function()
                             local funcs = nil
                             if typeof(filtergc) == "function" then
@@ -848,7 +865,20 @@ CatDalgona:CreateToggle("Anti-Crack Dalgona", "Clamps crack progress bar and neu
                                     if type(fn) == "function" then
                                         local ok, consts = pcall(getconstants_, fn)
                                         if ok and type(consts) == "table" then
-                                            -- 1. Neutralize upvalues in wrong click handler (100% stealth, zero function hooks)
+                                            -- 1. Hook direct failure functions (failed crack / fully cracked)
+                                            local isFailureFunc = false
+                                            for _, c in pairs(consts) do
+                                                if c == "dalgona rework failed crack" or (c == "ShapeName" and table.find(consts, "FullyCracked")) then
+                                                    isFailureFunc = true
+                                                    break
+                                                end
+                                            end
+
+                                            if isFailureFunc and typeof(hookfunction) == "function" then
+                                                pcall(hookfunction, fn, noop)
+                                            end
+
+                                            -- 2. Neutralize upvalues in wrong click handler
                                             if table.find(consts, "clicked wrong in dalgona ") and getupvalues_ and setupvalue_ then
                                                 local ok2, upvals = pcall(getupvalues_, fn)
                                                 if ok2 and type(upvals) == "table" then
@@ -872,7 +902,29 @@ CatDalgona:CreateToggle("Anti-Crack Dalgona", "Clamps crack progress bar and neu
                             end
                         end)
 
-                        -- Clamp GUI Crack and Stress Progress Bars to 0
+                        -- 3. Hitbox Magnetism: Expand outline hitboxes and magnetize to cursor
+                        pcall(function()
+                            local outline = getDalgonaOutline()
+                            if outline then
+                                local m = mouse or localPlayer:GetMouse()
+                                local hitPos = m and m.Hit and m.Hit.Position
+
+                                for _, part in ipairs(outline:GetChildren()) do
+                                    if part:IsA("BasePart") and not part:GetAttribute("Done") then
+                                        if not dalgonaCacheParts[part] then
+                                            dalgonaCacheParts[part] = { Position = part.Position, Transparency = part.Transparency }
+                                        end
+                                        part.CanTouch = true
+                                        part.CanCollide = false
+                                        if hitPos and (part.Position - hitPos).Magnitude < 10 then
+                                            part.Position = hitPos
+                                        end
+                                    end
+                                end
+                            end
+                        end)
+
+                        -- 4. Clamp Crack & Stress Progress Bars to 0
                         pcall(function()
                             local playerGui = localPlayer:FindFirstChild("PlayerGui")
                             local dalgonaUI = playerGui and playerGui:FindFirstChild("DalgonaUI")
@@ -882,7 +934,6 @@ CatDalgona:CreateToggle("Anti-Crack Dalgona", "Clamps crack progress bar and neu
                                 if crackBar and crackBar:FindFirstChild("Holder") and crackBar.Holder:FindFirstChild("Fill") then
                                     crackBar.Holder.Fill.Size = UDim2.new(0, 0, 1, 0)
                                 end
-
                                 local stressBar = dalgonaUI:FindFirstChild("StressBar")
                                 if stressBar then
                                     local fill = stressBar:FindFirstChild("Fill") or stressBar:FindFirstChild("Bar")
@@ -893,16 +944,20 @@ CatDalgona:CreateToggle("Anti-Crack Dalgona", "Clamps crack progress bar and neu
                             end
                         end)
                     end
-                    task.wait(0.25)
+                    task.wait(0.2)
                 end
                 Threads.dalgonaCrackLoop = nil
             end)
         end
+        notify("Dalgona", "Anti-Crack active.", 3)
     else
         if Threads.dalgonaCrackLoop then
             pcall(task.cancel, Threads.dalgonaCrackLoop)
             Threads.dalgonaCrackLoop = nil
         end
+        restoreDalgonaParts()
+        pcall(function() localPlayer:SetAttribute("HasLighter", nil) end)
+        notify("Dalgona", "Anti-Crack disabled.")
     end
 end)
 
