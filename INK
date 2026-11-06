@@ -386,7 +386,74 @@ RunService.RenderStepped:Connect(function()
     end
 end)
 
--- [3.5] Crosshair & Smart Aimbot Targeting
+-- [3.5] Crosshair, Role Helpers & Smart Aimbot Targeting
+local function isPlayerHunter(player)
+    if not player then return false end
+    if player:GetAttribute("IsHunter") == true then return true end
+    if player.Team and string.find(string.lower(player.Team.Name), "hunter") then return true end
+    local char = player.Character
+    if char then
+        if char:GetAttribute("IsHunter") == true or char:FindFirstChild("IsHunter") ~= nil then return true end
+        if char:FindFirstChild("Bat") or char:FindFirstChild("Baton") or char:FindFirstChild("Crowbar") then return true end
+    end
+    return false
+end
+
+local function isPlayerGuard(player)
+    if not player then return false end
+    if player:GetAttribute("IsGuard") == true then return true end
+    if player.Team and string.find(string.lower(player.Team.Name), "guard") then return true end
+    local char = player.Character
+    if char then
+        if char:FindFirstChild("TypeOfGuard") ~= nil or char:GetAttribute("TypeOfGuard") ~= nil then return true end
+        if char:FindFirstChild("GuardCanKillLockOn") ~= nil or char:FindFirstChild("PlayerCanKill") ~= nil then return true end
+        if string.find(string.lower(char.Name), "guard") then return true end
+        if char:FindFirstChild("Gun") or char:FindFirstChild("Revolver") or char:FindFirstChild("SubmachineGun") then return true end
+    end
+    return false
+end
+
+local function isValidAimbotTarget(p, localPlr)
+    if not p or p == localPlr then return false end
+    local pChar = p.Character
+    if not pChar then return false end
+
+    -- Verify vital components exist and target is actively alive
+    local pHrp = pChar:FindFirstChild("HumanoidRootPart")
+    local pHum = pChar:FindFirstChildOfClass("Humanoid")
+    if not pHrp or not pHum or pHum.Health <= 0 then return false end
+
+    -- Filter out invulnerable / forcefield-protected targets
+    if pChar:FindFirstChildOfClass("ForceField") then return false end
+
+    -- Filter out dead / eliminated / ghost states
+    if pChar:GetAttribute("Eliminated") == true or p:GetAttribute("Eliminated") == true then return false end
+    if pChar:FindFirstChild("Ghost") or pChar:GetAttribute("Ghost") == true then return false end
+
+    -- Filter out downed / crawling players (prevents snapping camera down to floor away from active threats)
+    if pChar:GetAttribute("Crawling") == true or pChar:FindFirstChild("Crawling") ~= nil then return false end
+
+    -- Role / Teammate discrimination:
+    -- 1. Guards do not target other Guards
+    if isPlayerGuard(localPlr) and isPlayerGuard(p) then
+        return false
+    end
+
+    -- 2. Hunters do not target other Hunters
+    if isPlayerHunter(localPlr) and isPlayerHunter(p) then
+        return false
+    end
+
+    -- 3. Team check: Teammates on the same team (in team-based game modes)
+    if localPlr.Team and p.Team and localPlr.Team == p.Team then
+        if not isPlayerHunter(localPlr) and not isPlayerGuard(localPlr) then
+            return false
+        end
+    end
+
+    return true
+end
+
 local function getAimCenter()
     local cam = Workspace.CurrentCamera or camera
     if not cam then return Vector2.zero end
@@ -405,30 +472,37 @@ local function getSmartAimbotTarget(maxFovDistance)
     local cam = Workspace.CurrentCamera or camera
     local char = localPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    if not cam or not hrp then return nil end
+    if not cam or not hrp then return nil, nil end
 
+    local myPos = hrp.Position
     local aimCenter = getAimCenter()
     local bestTarget = nil
-    local bestFovDist = maxFovDistance
+    local bestTargetPart = nil
+    local shortest3DDistance = math.huge
 
     for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= localPlayer and p.Character then
+        if isValidAimbotTarget(p, localPlayer) then
             local pChar = p.Character
             local pHrp = pChar:FindFirstChild("HumanoidRootPart")
-            local pHum = pChar:FindFirstChildOfClass("Humanoid")
-            if pHrp and pHum and pHum.Health > 0 then
-                local targetPart = (State.aimbotTargetPart == "Torso" and (pChar:FindFirstChild("UpperTorso")
-                    or pChar:FindFirstChild("Torso")
-                    or pHrp))
-                    or pChar:FindFirstChild("Head")
-                    or pHrp
-                if targetPart then
-                    local screenPos, onScreen = cam:WorldToViewportPoint(targetPart.Position)
-                    if onScreen and screenPos.Z > 0 then
-                        local distToCenter = (Vector2.new(screenPos.X, screenPos.Y) - aimCenter).Magnitude
-                        if distToCenter < bestFovDist then
-                            bestFovDist = distToCenter
+            local targetPart = (State.aimbotTargetPart == "Torso" and (pChar:FindFirstChild("UpperTorso")
+                or pChar:FindFirstChild("Torso")
+                or pHrp))
+                or pChar:FindFirstChild("Head")
+                or pHrp
+
+            if targetPart then
+                -- Convert target 3D position to 2D screen coordinate
+                local screenPos, onScreen = cam:WorldToViewportPoint(targetPart.Position)
+                if onScreen and screenPos.Z > 0 then
+                    -- Check if inside the FOV circle (screen distance from aim center)
+                    local distance2D = (Vector2.new(screenPos.X, screenPos.Y) - aimCenter).Magnitude
+                    if distance2D <= maxFovDistance then
+                        -- Prioritize target with shortest 3D distance to local player (rusher / closest threat)
+                        local distance3D = (targetPart.Position - myPos).Magnitude
+                        if distance3D < shortest3DDistance then
+                            shortest3DDistance = distance3D
                             bestTarget = p
+                            bestTargetPart = targetPart
                         end
                     end
                 end
@@ -436,7 +510,7 @@ local function getSmartAimbotTarget(maxFovDistance)
         end
     end
 
-    return bestTarget
+    return bestTarget, bestTargetPart
 end
 
 -- ==============================================================================
@@ -2401,27 +2475,24 @@ local CatCombatAssist = CombatTab:CreateCategory("Combat Assistance", true, 1)
 
 CatCombatAssist:CreateToggle("Aimbot", "Smoothly locks camera rotation onto closest opponent", false, function(enabled)
     State.aimbotEnabled = enabled
+    if Threads.aimbotConn then
+        pcall(function() Threads.aimbotConn:Disconnect() end)
+        Threads.aimbotConn = nil
+    end
     if enabled then
-        task.spawn(function()
-            while State.aimbotEnabled do
-                local char = localPlayer.Character
-                local hrp = char and char:FindFirstChild("HumanoidRootPart")
-                local cam = Workspace.CurrentCamera or camera
-                if hrp and cam then
-                    local targetPlayer = getSmartAimbotTarget(State.aimbotFovRadius or 150)
-                    if targetPlayer and targetPlayer.Character then
-                        local targetPart = (State.aimbotTargetPart == "Torso" and (targetPlayer.Character:FindFirstChild("UpperTorso")
-                            or targetPlayer.Character:FindFirstChild("Torso")
-                            or targetPlayer.Character:FindFirstChild("HumanoidRootPart")))
-                            or targetPlayer.Character:FindFirstChild("Head")
-                            or targetPlayer.Character:FindFirstChild("HumanoidRootPart")
-                        if targetPart then
-                            local targetCF = CFrame.new(cam.CFrame.Position, targetPart.Position)
-                            cam.CFrame = cam.CFrame:Lerp(targetCF, 0.35)
-                        end
-                    end
-                end
-                RunService.RenderStepped:Wait()
+        Threads.aimbotConn = RunService.RenderStepped:Connect(function()
+            if not State.aimbotEnabled then return end
+            local cam = Workspace.CurrentCamera or camera
+            local char = localPlayer.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            if not cam or not hrp then return end
+
+            local targetPlayer, targetPart = getSmartAimbotTarget(State.aimbotFovRadius or 150)
+            if targetPlayer and targetPart then
+                local camPos = cam.CFrame.Position
+                local targetPos = targetPart.Position
+                local targetCF = CFrame.lookAt(camPos, targetPos)
+                cam.CFrame = cam.CFrame:Lerp(targetCF, 0.6)
             end
         end)
     end
@@ -2590,31 +2661,10 @@ end)
 local espInstances = {}
 local objectEspInstances = {}
 
-local function isPlayerHunter(player)
-    if not player then return false end
-    if player:GetAttribute("IsHunter") == true then return true end
-    if player.Team and string.find(string.lower(player.Team.Name), "hunter") then return true end
-    local char = player.Character
-    if char then
-        if char:GetAttribute("IsHunter") == true or char:FindFirstChild("IsHunter") ~= nil then return true end
-        if char:FindFirstChild("Bat") or char:FindFirstChild("Baton") or char:FindFirstChild("Crowbar") then return true end
-    end
-    return false
-end
+-- Role identification helpers (isPlayerHunter and isPlayerGuard) are hoisted to Section [3.5]
+-- This allows both Combat (Aimbot & Target Discrimination) and Visuals (ESP Capsules & Trackers)
+-- to share unified, synchronized player classification logic without circular dependencies.
 
-local function isPlayerGuard(player)
-    if not player then return false end
-    if player:GetAttribute("IsGuard") == true then return true end
-    if player.Team and string.find(string.lower(player.Team.Name), "guard") then return true end
-    local char = player.Character
-    if char then
-        if char:FindFirstChild("TypeOfGuard") ~= nil or char:GetAttribute("TypeOfGuard") ~= nil then return true end
-        if char:FindFirstChild("GuardCanKillLockOn") ~= nil or char:FindFirstChild("PlayerCanKill") ~= nil then return true end
-        if string.find(string.lower(char.Name), "guard") then return true end
-        if char:FindFirstChild("Gun") or char:FindFirstChild("Revolver") or char:FindFirstChild("SubmachineGun") then return true end
-    end
-    return false
-end
 
 local function getPlayerPower(player)
     if not player then return nil end
