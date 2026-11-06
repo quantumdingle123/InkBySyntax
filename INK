@@ -83,6 +83,10 @@ local State = {
     rapidFireEnabled = false,
     infiniteAmmoEnabled = false,
     aimbotEnabled = false,
+    aimbotKey = Enum.KeyCode.E,
+    targetLockKey = Enum.KeyCode.Q,
+    aimbotTargetLock = false,
+    lockedTargetPlayer = nil,
     aimbotTargetPart = "Head", -- "Head" or "Torso"
     showFovEnabled = false,
     aimbotFovRadius = 150,
@@ -467,15 +471,81 @@ local function getAimCenter()
     return cam.ViewportSize / 2
 end
 
+local lockedHighlight = nil
+
+local function clearLockedHighlight()
+    if lockedHighlight then
+        pcall(function()
+            lockedHighlight.Adornee = nil
+            lockedHighlight:Destroy()
+        end)
+        lockedHighlight = nil
+    end
+end
+
+local function updateLockedHighlight(targetChar)
+    if not targetChar then
+        clearLockedHighlight()
+        return
+    end
+    if not lockedHighlight or not lockedHighlight.Parent then
+        lockedHighlight = Instance.new("Highlight")
+        lockedHighlight.Name = "AimbotLockHighlight"
+        lockedHighlight.FillColor = Color3.fromRGB(46, 204, 113) -- Emerald Green
+        lockedHighlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+        lockedHighlight.FillTransparency = 0.45
+        lockedHighlight.OutlineTransparency = 0.1
+        lockedHighlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+
+        local safeParent = (typeof(gethui) == "function" and gethui()) or game:GetService("CoreGui")
+        lockedHighlight.Parent = safeParent
+    end
+    lockedHighlight.Adornee = targetChar
+    lockedHighlight.Enabled = true
+end
+
 local function getSmartAimbotTarget(maxFovDistance)
     maxFovDistance = maxFovDistance or State.aimbotFovRadius or 150
     local cam = Workspace.CurrentCamera or camera
     local char = localPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    if not cam or not hrp then return nil, nil end
+    if not cam or not hrp then
+        clearLockedHighlight()
+        return nil, nil
+    end
 
     local myPos = hrp.Position
     local aimCenter = getAimCenter()
+
+    -- 1. Check if Target Lock is active and we have an existing locked target
+    if State.aimbotTargetLock and State.lockedTargetPlayer then
+        local p = State.lockedTargetPlayer
+        if isValidAimbotTarget(p, localPlayer) and p.Character then
+            local pChar = p.Character
+            local pHrp = pChar:FindFirstChild("HumanoidRootPart")
+            local targetPart = (State.aimbotTargetPart == "Torso" and (pChar:FindFirstChild("UpperTorso")
+                or pChar:FindFirstChild("Torso")
+                or pHrp))
+                or pChar:FindFirstChild("Head")
+                or pHrp
+
+            if targetPart then
+                local screenPos, onScreen = cam:WorldToViewportPoint(targetPart.Position)
+                if onScreen and screenPos.Z > 0 then
+                    local distance2D = (Vector2.new(screenPos.X, screenPos.Y) - aimCenter).Magnitude
+                    if distance2D <= maxFovDistance then
+                        updateLockedHighlight(pChar)
+                        return p, targetPart
+                    end
+                end
+            end
+        end
+        -- Locked target is no longer valid, died, or moved outside FOV
+        State.lockedTargetPlayer = nil
+        clearLockedHighlight()
+    end
+
+    -- 2. Find closest target in FOV (or new target to lock)
     local bestTarget = nil
     local bestTargetPart = nil
     local shortest3DDistance = math.huge
@@ -508,6 +578,18 @@ local function getSmartAimbotTarget(maxFovDistance)
                 end
             end
         end
+    end
+
+    if State.aimbotTargetLock then
+        if bestTarget and bestTarget.Character then
+            State.lockedTargetPlayer = bestTarget
+            updateLockedHighlight(bestTarget.Character)
+        else
+            State.lockedTargetPlayer = nil
+            clearLockedHighlight()
+        end
+    else
+        clearLockedHighlight()
     end
 
     return bestTarget, bestTargetPart
@@ -2473,8 +2555,13 @@ end)
 local CombatTab = Window:CreateTab("Combat", "Crosshair")
 local CatCombatAssist = CombatTab:CreateCategory("Combat Assistance", true, 1)
 
-CatCombatAssist:CreateToggle("Aimbot", "Smoothly locks camera rotation onto closest opponent", false, function(enabled)
+local aimbotToggle
+aimbotToggle = CatCombatAssist:CreateToggle("Aimbot", "Smoothly locks camera rotation onto closest opponent", false, function(enabled)
     State.aimbotEnabled = enabled
+    if not enabled then
+        State.lockedTargetPlayer = nil
+        clearLockedHighlight()
+    end
     if Threads.aimbotConn then
         pcall(function() Threads.aimbotConn:Disconnect() end)
         Threads.aimbotConn = nil
@@ -2495,6 +2582,43 @@ CatCombatAssist:CreateToggle("Aimbot", "Smoothly locks camera rotation onto clos
                 cam.CFrame = cam.CFrame:Lerp(targetCF, 0.6)
             end
         end)
+    end
+end)
+
+CatCombatAssist:CreateKeybind("Aimbot Keybind", "Toggle aimbot ON or OFF with assigned key", Enum.KeyCode.E, function(key, isPressed)
+    if isPressed then
+        if aimbotToggle and aimbotToggle.SetValue then
+            aimbotToggle:SetValue(not State.aimbotEnabled, true)
+        else
+            State.aimbotEnabled = not State.aimbotEnabled
+        end
+    else
+        State.aimbotKey = key
+    end
+end)
+
+local targetLockToggle
+targetLockToggle = CatCombatAssist:CreateToggle("Target Lock", "Persistently tracks single target without switching", false, function(enabled)
+    State.aimbotTargetLock = enabled
+    if not enabled then
+        State.lockedTargetPlayer = nil
+        clearLockedHighlight()
+    end
+end)
+
+CatCombatAssist:CreateKeybind("Target Lock Keybind", "Toggle target lock ON or OFF with assigned key", Enum.KeyCode.Q, function(key, isPressed)
+    if isPressed then
+        if targetLockToggle and targetLockToggle.SetValue then
+            targetLockToggle:SetValue(not State.aimbotTargetLock, true)
+        else
+            State.aimbotTargetLock = not State.aimbotTargetLock
+            if not State.aimbotTargetLock then
+                State.lockedTargetPlayer = nil
+                clearLockedHighlight()
+            end
+        end
+    else
+        State.targetLockKey = key
     end
 end)
 
