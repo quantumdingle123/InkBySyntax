@@ -297,7 +297,7 @@ local function initFovCircle()
         circleFrame.Name = "FOVCircle"
         circleFrame.AnchorPoint = Vector2.new(0.5, 0.5)
         circleFrame.BackgroundTransparency = 1
-        circleFrame.Size = UDim2.new(0, (State.aimbotFovRadius or 150) * 2, 0, (State.aimbotFovRadius or 150) * 2)
+        circleFrame.Size = UDim2.new(0, State.aimbotFovRadius or 150, 0, State.aimbotFovRadius or 150)
         circleFrame.Position = UDim2.new(0.5, 0, 0.5, 0) -- Fixed to exact mathematical center
         circleFrame.Visible = State.showFovEnabled == true
         circleFrame.Parent = fovGui
@@ -330,9 +330,7 @@ local function initFovCircle()
 end
 
 -- Note: initFovCircle() is now strictly lazy-loaded inside RenderStepped only when State.showFovEnabled is true
-
 local function updateFovCircleColor(color)
-    color = color or getGuiThemeAccent()
     if fovDrawingCircle then
         pcall(function() fovDrawingCircle.Color = color end)
     end
@@ -341,20 +339,19 @@ local function updateFovCircleColor(color)
     end
 end
 
--- RenderStepped real-time position, radius scale, and theme synchronizer
 RunService.RenderStepped:Connect(function()
     local isVisible = State.showFovEnabled == true
     if isVisible and not fovGuiCircle then
         initFovCircle()
     end
 
-    local radius = State.aimbotFovRadius or 150
+    local fovSize = State.aimbotFovRadius or 150
     local cam = Workspace.CurrentCamera or camera
 
     if fovGuiCircle then
         fovGuiCircle.Visible = isVisible
         if isVisible then
-            fovGuiCircle.Size = UDim2.new(0, radius * 2, 0, radius * 2)
+            fovGuiCircle.Size = UDim2.new(0, fovSize, 0, fovSize)
             fovGuiCircle.Position = UDim2.new(0.5, 0, 0.5, 0)
             if fovGuiStroke then
                 fovGuiStroke.Color = getGuiThemeAccent()
@@ -367,7 +364,7 @@ RunService.RenderStepped:Connect(function()
             fovDrawingCircle.Visible = isVisible
             if isVisible and cam then
                 fovDrawingCircle.Position = cam.ViewportSize / 2
-                fovDrawingCircle.Radius = radius
+                fovDrawingCircle.Radius = fovSize / 2
                 fovDrawingCircle.Color = getGuiThemeAccent()
             end
         end)
@@ -414,29 +411,9 @@ local function isValidAimbotTarget(p, localPlr)
     -- Filter out invulnerable / forcefield-protected targets
     if pChar:FindFirstChildOfClass("ForceField") then return false end
 
-    -- Filter out dead / eliminated / ghost states
-    if pChar:GetAttribute("Eliminated") == true or p:GetAttribute("Eliminated") == true then return false end
-    if pChar:FindFirstChild("Ghost") or pChar:GetAttribute("Ghost") == true then return false end
-
-    -- Filter out downed / crawling players (prevents snapping camera down to floor away from active threats)
-    if pChar:GetAttribute("Crawling") == true or pChar:FindFirstChild("Crawling") ~= nil then return false end
-
-    -- Role / Teammate discrimination:
-    -- 1. Guards do not target other Guards
-    if isPlayerGuard(localPlr) and isPlayerGuard(p) then
-        return false
-    end
-
-    -- 2. Hunters do not target other Hunters
-    if isPlayerHunter(localPlr) and isPlayerHunter(p) then
-        return false
-    end
-
-    -- 3. Team check: Teammates on the same team (in team-based game modes)
+    -- Clean team check: only filter out if both players are on the same assigned team
     if localPlr.Team and p.Team and localPlr.Team == p.Team then
-        if not isPlayerHunter(localPlr) and not isPlayerGuard(localPlr) then
-            return false
-        end
+        return false
     end
 
     return true
@@ -483,7 +460,8 @@ local function updateLockedHighlight(targetChar)
 end
 
 local function getSmartAimbotTarget(maxFovDistance)
-    maxFovDistance = maxFovDistance or State.aimbotFovRadius or 150
+    local fovDiameter = maxFovDistance or State.aimbotFovRadius or 150
+    local fovRadius = fovDiameter / 2
     local cam = Workspace.CurrentCamera or camera
     local char = localPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
@@ -501,19 +479,16 @@ local function getSmartAimbotTarget(maxFovDistance)
         if isValidAimbotTarget(p, localPlayer) and p.Character then
             local pChar = p.Character
             local pHrp = pChar:FindFirstChild("HumanoidRootPart")
-            local targetPart
+            local targetPart = pHrp
             if State.aimbotTargetPart == "Head" then
                 targetPart = pChar:FindFirstChild("Head") or pHrp
-            else
-                -- Default & "Torso": Target HumanoidRootPart (exact body center, matches zipbomb.txt)
-                targetPart = pHrp or pChar:FindFirstChild("Torso") or pChar:FindFirstChild("UpperTorso")
             end
 
             if targetPart then
                 local screenPos, onScreen = cam:WorldToViewportPoint(targetPart.Position)
                 if onScreen and screenPos.Z > 0 then
                     local distance2D = (Vector2.new(screenPos.X, screenPos.Y) - aimCenter).Magnitude
-                    if distance2D <= maxFovDistance then
+                    if distance2D <= fovRadius then
                         updateLockedHighlight(pChar)
                         return p, targetPart
                     end
@@ -525,7 +500,7 @@ local function getSmartAimbotTarget(maxFovDistance)
         clearLockedHighlight()
     end
 
-    -- 2. Find closest target in FOV (or new target to lock)
+    -- 2. Find closest target in FOV (matching zipbomb.txt closest 3D distance priority)
     local bestTarget = nil
     local bestTargetPart = nil
     local shortest3DDistance = math.huge
@@ -534,22 +509,16 @@ local function getSmartAimbotTarget(maxFovDistance)
         if isValidAimbotTarget(p, localPlayer) then
             local pChar = p.Character
             local pHrp = pChar:FindFirstChild("HumanoidRootPart")
-            local targetPart
+            local targetPart = pHrp
             if State.aimbotTargetPart == "Head" then
                 targetPart = pChar:FindFirstChild("Head") or pHrp
-            else
-                -- Default & "Torso": Target HumanoidRootPart (exact body center, matches zipbomb.txt)
-                targetPart = pHrp or pChar:FindFirstChild("Torso") or pChar:FindFirstChild("UpperTorso")
             end
 
             if targetPart then
-                -- Convert target 3D position to 2D screen coordinate
                 local screenPos, onScreen = cam:WorldToViewportPoint(targetPart.Position)
                 if onScreen and screenPos.Z > 0 then
-                    -- Check if inside the FOV circle (screen distance from aim center)
                     local distance2D = (Vector2.new(screenPos.X, screenPos.Y) - aimCenter).Magnitude
-                    if distance2D <= maxFovDistance then
-                        -- Prioritize target with shortest 3D distance to local player (rusher / closest threat)
+                    if distance2D <= fovRadius then
                         local distance3D = (targetPart.Position - myPos).Magnitude
                         if distance3D < shortest3DDistance then
                             shortest3DDistance = distance3D
@@ -2560,28 +2529,26 @@ aimbotToggle = CatCombatAssist:CreateToggle("Aimbot", "Smoothly locks camera rot
         State.lockedTargetPlayer = nil
         clearLockedHighlight()
     end
-    if Threads.aimbotConn then
-        pcall(function() Threads.aimbotConn:Disconnect() end)
-        Threads.aimbotConn = nil
-    end
-    if enabled then
-        Threads.aimbotConn = RunService.RenderStepped:Connect(function()
-            if not State.aimbotEnabled then return end
-            local cam = Workspace.CurrentCamera or camera
-            local char = localPlayer.Character
-            local hrp = char and char:FindFirstChild("HumanoidRootPart")
-            if not cam or not hrp then return end
-
-            local targetPlayer, targetPart = getSmartAimbotTarget(State.aimbotFovRadius or 150)
-            if targetPlayer and targetPart then
-                local camPos = cam.CFrame.Position
-                local targetPos = targetPart.Position
-                local targetCF = CFrame.lookAt(camPos, targetPos)
-                cam.CFrame = cam.CFrame:Lerp(targetCF, 0.6)
-            end
-        end)
-    end
 end)
+
+-- Dedicated RenderStepped connection for Aimbot (matching zipbomb.txt lines 336-350)
+if not Threads.aimbotConn then
+    Threads.aimbotConn = RunService.RenderStepped:Connect(function()
+        if not State.aimbotEnabled then return end
+        local cam = Workspace.CurrentCamera or camera
+        local char = localPlayer.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if not cam or not hrp then return end
+
+        local targetPlayer, targetPart = getSmartAimbotTarget(State.aimbotFovRadius or 150)
+        if targetPlayer and targetPart then
+            local camPos = cam.CFrame.Position
+            local targetPos = targetPart.Position
+            local targetCF = CFrame.lookAt(camPos, targetPos)
+            cam.CFrame = cam.CFrame:Lerp(targetCF, 0.6)
+        end
+    end)
+end
 
 CatCombatAssist:CreateKeybind("Aimbot Keybind", "Toggle aimbot ON or OFF with assigned key", Enum.KeyCode.E, function(key, isPressed)
     if isPressed then
@@ -2589,6 +2556,10 @@ CatCombatAssist:CreateKeybind("Aimbot Keybind", "Toggle aimbot ON or OFF with as
             aimbotToggle:SetValue(not State.aimbotEnabled, true)
         else
             State.aimbotEnabled = not State.aimbotEnabled
+            if not State.aimbotEnabled then
+                State.lockedTargetPlayer = nil
+                clearLockedHighlight()
+            end
         end
     else
         State.aimbotKey = key
@@ -2637,13 +2608,13 @@ CatCombatAssist:CreateToggle("Show FOV", "Displays visual lock-on circle matchin
     end
 end)
 
-CatCombatAssist:CreateSlider("FOV Radius", "Scales lock-on search radius and visual FOV circle", 30, 500, 150, function(val)
+CatCombatAssist:CreateSlider("FOV Size", "Scales lock-on search radius and visual FOV circle", 10, 500, 150, function(val)
     State.aimbotFovRadius = val
     if fovGuiCircle then
-        fovGuiCircle.Size = UDim2.new(0, val * 2, 0, val * 2)
+        fovGuiCircle.Size = UDim2.new(0, val, 0, val)
     end
     if fovDrawingCircle then
-        pcall(function() fovDrawingCircle.Radius = val end)
+        pcall(function() fovDrawingCircle.Radius = val / 2 end)
     end
 end)
 
