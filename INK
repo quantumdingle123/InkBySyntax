@@ -476,26 +476,19 @@ local function getSmartAimbotTarget(maxFovDistance)
     -- 1. Check if Target Lock is active and we have an existing locked target
     if State.aimbotTargetLock and State.lockedTargetPlayer then
         local p = State.lockedTargetPlayer
-        if isValidAimbotTarget(p, localPlayer) and p.Character then
+        if p and p.Parent and p:IsDescendantOf(Players) and isValidAimbotTarget(p, localPlayer) and p.Character then
             local pChar = p.Character
             local pHrp = pChar:FindFirstChild("HumanoidRootPart")
-            local targetPart = pHrp
-            if State.aimbotTargetPart == "Head" then
-                targetPart = pChar:FindFirstChild("Head") or pHrp
-            end
-
-            if targetPart then
-                local screenPos, onScreen = cam:WorldToViewportPoint(targetPart.Position)
-                if onScreen and screenPos.Z > 0 then
-                    local distance2D = (Vector2.new(screenPos.X, screenPos.Y) - aimCenter).Magnitude
-                    if distance2D <= fovRadius then
-                        updateLockedHighlight(pChar)
-                        return p, targetPart
-                    end
+            if pHrp then
+                local targetPart = pHrp
+                if State.aimbotTargetPart == "Head" then
+                    targetPart = pChar:FindFirstChild("Head") or pHrp
                 end
+                updateLockedHighlight(pChar)
+                return p, targetPart
             end
         end
-        -- Locked target is no longer valid, died, or moved outside FOV
+        -- Only drop lock if target is dead, left the server, or became invalid
         State.lockedTargetPlayer = nil
         clearLockedHighlight()
     end
@@ -1126,7 +1119,7 @@ local function firePentathlonRemote(action, data)
     return true
 end
 
-CatPentathlon:CreateSlider("Ddakji Throw Strength", "Sets power percentage for Ddakji throws", 10, 100, 100, function(val)
+CatPentathlon:CreateSlider("Ddakji Throw Strength", "Sets power percentage for Ddakji throws", 10, 100, 100, 1, function(val)
     State.ddakjiThrowStrength = val
 end)
 
@@ -2525,7 +2518,7 @@ local CatCombatAssist = CombatTab:CreateCategory("Combat Assistance", true, 1)
 local aimbotToggle
 aimbotToggle = CatCombatAssist:CreateToggle("Aimbot", "Smoothly locks camera rotation onto closest opponent", false, function(enabled)
     State.aimbotEnabled = enabled
-    if not enabled then
+    if not enabled and not State.aimbotTargetLock then
         State.lockedTargetPlayer = nil
         clearLockedHighlight()
     end
@@ -2534,7 +2527,7 @@ end)
 -- Dedicated RenderStepped connection for Aimbot (matching zipbomb.txt lines 336-350)
 if not Threads.aimbotConn then
     Threads.aimbotConn = RunService.RenderStepped:Connect(function()
-        if not State.aimbotEnabled then return end
+        if not State.aimbotEnabled and not State.aimbotTargetLock then return end
         local cam = Workspace.CurrentCamera or camera
         local char = localPlayer.Character
         local hrp = char and char:FindFirstChild("HumanoidRootPart")
@@ -2556,7 +2549,7 @@ CatCombatAssist:CreateKeybind("Aimbot Keybind", "Toggle aimbot ON or OFF with as
             aimbotToggle:SetValue(not State.aimbotEnabled, true)
         else
             State.aimbotEnabled = not State.aimbotEnabled
-            if not State.aimbotEnabled then
+            if not State.aimbotEnabled and not State.aimbotTargetLock then
                 State.lockedTargetPlayer = nil
                 clearLockedHighlight()
             end
@@ -2608,7 +2601,7 @@ CatCombatAssist:CreateToggle("Show FOV", "Displays visual lock-on circle matchin
     end
 end)
 
-CatCombatAssist:CreateSlider("FOV Size", "Scales lock-on search radius and visual FOV circle", 10, 500, 150, function(val)
+CatCombatAssist:CreateSlider("FOV Size", "Scales lock-on search radius and visual FOV circle", 10, 500, 150, 1, function(val)
     State.aimbotFovRadius = val
     if fovGuiCircle then
         fovGuiCircle.Size = UDim2.new(0, val, 0, val)
