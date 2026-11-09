@@ -78,7 +78,6 @@ local State = {
     squidKillAuraEnabled = false,
 
     -- Rebel Weaponry & Combat
-    autoShootEnabled = false,
     noRecoilEnabled = false,
     rapidFireEnabled = false,
     infiniteAmmoEnabled = false,
@@ -94,7 +93,6 @@ local State = {
     bandageHelperEnabled = false,
 
     -- Automation & Utilities
-    bypassMovementChecks = false,
     arcadeAutoFarmEnabled = false,
     instantBoxMachineEnabled = false,
     playerEspEnabled = false,
@@ -772,7 +770,6 @@ end)
 -- ------------------------------------------------------------------------------
 local CatDalgona = GamesTab:CreateCategory("Dalgona", false, 2)
 
-local oneClickConnection = nil
 local dalgonaCacheParts = {}
 
 local function getDalgonaOutline()
@@ -797,142 +794,6 @@ local function restoreDalgonaParts()
     end
     table.clear(dalgonaCacheParts)
 end
-
-CatDalgona:CreateButton("Auto Complete Dalgona", "Instantly completes outline tracing and finalizes cookie", "Complete", function()
-    if not (isCurrentGame("Dalgona") or (localPlayer:FindFirstChild("PlayerGui") and localPlayer.PlayerGui:FindFirstChild("DalgonaUI"))) then
-        notify("Dalgona", "You must be inside Dalgona minigame.")
-        return
-    end
-
-    -- 1. Dispatch network remotes
-    pcall(function()
-        local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-        local dalgonaRemote = remotes and remotes:FindFirstChild("DALGONATEMPREMPTE")
-        if dalgonaRemote and dalgonaRemote:IsA("RemoteEvent") then
-            dalgonaRemote:FireServer({ Completed = true })
-            dalgonaRemote:FireServer({ Success = true })
-        end
-    end)
-
-    -- 2. Scan garbage collector for progress upvalues
-    local getupvalues_ = debug and (debug.getupvalues or debug.get_upvalues) or getupvalues
-    local setupvalue_ = debug and (debug.setupvalue or debug.setup_value) or setupvalue
-    local getconstants_ = debug and (debug.getconstants or debug.get_constants) or getconstants
-
-    local getGcFunc = typeof(filtergc) == "function" and (function() return filtergc("function", {}, false) end) or (typeof(getgc) == "function" and getgc)
-    if getGcFunc and getupvalues_ and setupvalue_ then
-        local funcs = nil
-        pcall(function() funcs = getGcFunc() end)
-        if type(funcs) == "table" then
-            for _, fn in ipairs(funcs) do
-                if type(fn) == "function" then
-                    local ok, consts = pcall(getconstants_, fn)
-                    if ok and type(consts) == "table" then
-                        local hasWrong = table.find(consts, "clicked wrong in dalgona ")
-                        local hasComp = table.find(consts, "Completed")
-                        local hasProg = table.find(consts, "Progress")
-                        if hasWrong or (hasComp and hasProg) then
-                            local ok2, upvals = pcall(getupvalues_, fn)
-                            if ok2 and type(upvals) == "table" then
-                                for k, uv in pairs(upvals) do
-                                    if type(uv) == "table" and typeof(uv.FireServer) == "function" then
-                                        pcall(uv.FireServer, uv, { Completed = true })
-                                        pcall(uv.FireServer, uv, { Success = true })
-                                    end
-                                    if type(uv) == "number" and uv >= 0 and uv <= 5000 then
-                                        pcall(setupvalue_, fn, k, 999999)
-                                    end
-                                    if type(uv) == "boolean" and uv == true then
-                                        pcall(setupvalue_, fn, k, false)
-                                    end
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
-
-    -- 3. Visual and state completion for outline parts
-    pcall(function()
-        local outline = getDalgonaOutline()
-        if outline then
-            for _, child in ipairs(outline:GetChildren()) do
-                if child:IsA("BasePart") then
-                    child:SetAttribute("Done", true)
-                    child.Color = Color3.fromRGB(0, 255, 0)
-                    child.Material = Enum.Material.Neon
-                    child.Transparency = 0
-                    child.Name = "DalgonaClickPart"
-                end
-            end
-        end
-    end)
-
-    -- 4. Reset camera and close DalgonaUI
-    pcall(function()
-        local cam = Workspace.CurrentCamera
-        if cam then
-            cam.CameraType = Enum.CameraType.Custom
-        end
-        local pGui = localPlayer:FindFirstChild("PlayerGui")
-        local dalUI = pGui and pGui:FindFirstChild("DalgonaUI")
-        if dalUI then
-            dalUI.Enabled = false
-        end
-    end)
-
-    notify("Dalgona", "Dalgona Completed Successfully")
-end)
-
-CatDalgona:CreateToggle("One Click Complete", "Teleports outline hitboxes directly under cursor", false, function(enabled)
-    State.oneClickDalgonaEnabled = enabled
-    if enabled then
-        if oneClickConnection then oneClickConnection:Disconnect() end
-        oneClickConnection = RunService.RenderStepped:Connect(function()
-            if not State.oneClickDalgonaEnabled then return end
-            if not (isCurrentGame("Dalgona") or (localPlayer:FindFirstChild("PlayerGui") and localPlayer.PlayerGui:FindFirstChild("DalgonaUI"))) then
-                if next(dalgonaCacheParts) then
-                    restoreDalgonaParts()
-                end
-                return
-            end
-
-            pcall(function()
-                local m = mouse or localPlayer:GetMouse()
-                local hitPos = m and m.Hit and m.Hit.Position
-                if not hitPos then
-                    local char = localPlayer.Character
-                    local root = char and char:FindFirstChild("HumanoidRootPart")
-                    if root then hitPos = root.Position end
-                end
-                if not hitPos then return end
-
-                local outline = getDalgonaOutline()
-                if outline then
-                    for _, child in ipairs(outline:GetChildren()) do
-                        if child:IsA("BasePart") and not child:GetAttribute("Done") then
-                            if not dalgonaCacheParts[child] then
-                                dalgonaCacheParts[child] = { Position = child.Position, Transparency = child.Transparency }
-                            end
-                            child.Position = hitPos
-                            child.Transparency = 1
-                        end
-                    end
-                end
-            end)
-        end)
-        notify("Dalgona", "One Click Complete engaged. Click anywhere on cookie.")
-    else
-        if oneClickConnection then
-            pcall(function() oneClickConnection:Disconnect() end)
-            oneClickConnection = nil
-        end
-        restoreDalgonaParts()
-        notify("Dalgona", "Hitbox repositioning disabled.")
-    end
-end)
 
 CatDalgona:CreateToggle("Anti-Crack Dalgona", "Neutralizes breakage failure functions and clamps crack progress", false, function(enabled)
     State.antiCrackDalgonaEnabled = enabled
@@ -2279,71 +2140,10 @@ local function getEquippedGun()
     return nil
 end
 
-local function getBestEnemyHead()
-    local myChar = localPlayer.Character
-    local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
-    if not myHrp then return nil end
-
-    local bestHead = nil
-    local bestDist = math.huge
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= localPlayer and p.Character then
-            local pHrp = p.Character:FindFirstChild("HumanoidRootPart")
-            local pHead = p.Character:FindFirstChild("Head")
-            local pHum = p.Character:FindFirstChildOfClass("Humanoid")
-            if pHrp and pHead and pHum and pHum.Health > 0 then
-                local dist = (pHead.Position - myHrp.Position).Magnitude
-                if dist < bestDist and dist < 450 then
-                    bestDist = dist
-                    bestHead = pHead
-                end
-            end
-        end
-    end
-    return bestHead
-end
-
 -- ------------------------------------------------------------------------------
 -- [2.1] Rebel Weaponry
 -- ------------------------------------------------------------------------------
 local CatRebel = RebelTab:CreateCategory("Rebel Weaponry", true, 1)
-
-CatRebel:CreateToggle("Auto Shoot", "Continuously fires equipped firearm at closest enemy head", false, function(enabled)
-    State.autoShootEnabled = enabled
-    if enabled then
-        task.spawn(function()
-            while State.autoShootEnabled do
-                local gun = getEquippedGun()
-                if gun then
-                    local targetHead = getBestEnemyHead()
-                    if targetHead then
-                        local payload = {
-                            gun,
-                            {
-                                RayObject = Ray.new(camera.CFrame.Position, (targetHead.Position - camera.CFrame.Position).Unit * 500),
-                                TargetInstance = targetHead,
-                                ClientRayPosition = targetHead.Position,
-                                HitPart = targetHead,
-                                Normal = Vector3.new(0, 1, 0),
-                                FirePosition = targetHead.Position + Vector3.new(0, 1, 0)
-                            }
-                        }
-                        pcall(function()
-                            local rem = ReplicatedStorage:FindFirstChild("Remotes") and ReplicatedStorage.Remotes:FindFirstChild("FiredGunClient")
-                            if rem then
-                                rem:FireServer(unpack(payload))
-                                rem:FireServer(gun, { ReloadingGun = true })
-                            end
-                        end)
-                    end
-                end
-                task.wait(0.08)
-            end
-        end)
-    end
-end)
-
--- Silent Aim and metatable hooks removed for complete anti-detection stealth
 
 CatRebel:CreateToggle("No Recoil & Spread", "Zeros weapon recoil and bullet spread tables", false, function(enabled)
     State.noRecoilEnabled = enabled
@@ -3700,30 +3500,6 @@ local UtilitiesTab = Window:CreateTab("Utilities", "Wrench")
 -- [4.1] Performance & Protection
 -- ------------------------------------------------------------------------------
 local CatProtection = UtilitiesTab:CreateCategory("Performance & Protection", true, 1)
-
--- Movement Check Bypass (Manual toggle: only sends DashRequest when explicitly turned on)
-CatProtection:CreateToggle("Bypass Movement Checks", "Sends natural movement signals to prevent anti-cheat kicks", false, function(enabled)
-    State.bypassMovementChecks = enabled
-    if enabled then
-        if not Threads.bypassThread then
-            Threads.bypassThread = task.spawn(function()
-                while State.bypassMovementChecks do
-                    pcall(function()
-                        local rem = ReplicatedStorage:FindFirstChild("Remotes")
-                        rem = rem and rem:FindFirstChild("DashRequest") or ReplicatedStorage:FindFirstChild("DashRequest", true)
-                        if rem and rem:IsA("RemoteEvent") then
-                            rem:FireServer()
-                        end
-                    end)
-                    task.wait(1)
-                end
-                Threads.bypassThread = nil
-            end)
-        end
-    else
-        Threads.bypassThread = nil
-    end
-end)
 
 CatProtection:CreateToggle("Anti Push / Anti Ragdoll", "Cleanses physics locks and restores upright state", false, function(enabled)
     State.antiPushEnabled = enabled
