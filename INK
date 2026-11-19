@@ -76,8 +76,7 @@ local State = {
     antiSlowEnabled = false,
     throwPoleAimEnabled = false,
 
-    -- Rebel & Combat
-    autoShootEnabled = false,
+    -- Combat
     aimbotEnabled = false,
     aimbotKey = Enum.KeyCode.E,
     targetLockKey = Enum.KeyCode.Q,
@@ -90,7 +89,6 @@ local State = {
     bandageHelperEnabled = false,
 
     -- ESP & Utilities
-    bypassMovementChecks = false,
     playerEspEnabled = false,
     espPowersEnabled = false,
     espKeysEnabled = false,
@@ -127,72 +125,84 @@ local function getCurrentGame()
     lastGameCheck = tick()
     local values = Workspace:FindFirstChild("Values")
     local currentGameObj = values and values:FindFirstChild("CurrentGame")
-    if currentGameObj and currentGameObj.Value ~= "" then
-        cachedGame = currentGameObj.Value
+    local rawVal = currentGameObj and currentGameObj.Value
+    if rawVal ~= nil and tostring(rawVal) ~= "" then
+        cachedGame = tostring(rawVal)
     else
         cachedGame = nil
     end
     return cachedGame
 end
 
+local function normalizeGameName(name)
+    if type(name) ~= "string" then return "" end
+    return string.lower((string.gsub(name, "[^%w]", "")))
+end
+
 local function isCurrentGame(gameName)
     return getCurrentGame() == gameName
+end
+
+local function isCurrentGameNormalized(targetNorm)
+    return normalizeGameName(getCurrentGame()) == targetNorm
+end
+
+local cachedHnsMap = nil
+local lastHnsMapCheck = 0
+
+local function findHideAndSeekMap(forceRefresh)
+    local now = tick()
+    if not forceRefresh and (now - lastHnsMapCheck) < 0.5 then
+        if cachedHnsMap ~= nil then
+            if cachedHnsMap.Parent then
+                return cachedHnsMap
+            end
+            cachedHnsMap = nil
+        else
+            return nil
+        end
+    end
+    lastHnsMapCheck = now
+    local exact = Workspace:FindFirstChild("HideAndSeekMap")
+    if exact then
+        cachedHnsMap = exact
+        return exact
+    end
+    for _, child in ipairs(Workspace:GetChildren()) do
+        if child:IsA("Model") or child:IsA("Folder") then
+            local norm = normalizeGameName(child.Name)
+            if string.find(norm, "hideandseek", 1, true) then
+                cachedHnsMap = child
+                return child
+            end
+        end
+    end
+    cachedHnsMap = nil
+    return nil
+end
+
+local function getHideAndSeekEvidence(forceRefresh)
+    local rawGame = getCurrentGame()
+    local mapObj = findHideAndSeekMap(forceRefresh)
+    local positive = (normalizeGameName(rawGame) == "hideandseek") or (mapObj ~= nil)
+    return positive, rawGame, mapObj
+end
+
+local function logHideAndSeekDiagnostic(featureLabel)
+    local positive, rawGame, mapObj = getHideAndSeekEvidence(true)
+    local gameStr = rawGame and tostring(rawGame) or "nil"
+    local mapStr = mapObj and mapObj.Name or "none"
+    if positive then
+        notify(featureLabel, "Gate ACTIVE (CurrentGame=" .. gameStr .. ", Map=" .. mapStr .. ")", 4)
+    else
+        notify(featureLabel, "Waiting for Hide & Seek (CurrentGame=" .. gameStr .. ", Map=" .. mapStr .. ")", 4)
+    end
 end
 
 -- [3.25] Zero-Hook Stealth Architecture
 -- Client environment maintains 100% native metamethod and closure integrity on load.
 -- All gameplay enhancements utilize native property observers, attribute setters, and RenderStepped locks.
 -- This ensures 100% undetectable execution in lobby, intermission, and all active minigames.
-
--- [3.3] Remote Introspection & Garbage Collection Scanner
-local RemoteEngine = { Cache = {} }
-
-function RemoteEngine:GetWrapper(remoteName)
-    if self.Cache[remoteName] then
-        return self.Cache[remoteName]
-    end
-
-    local searchGC = (typeof(filtergc) == "function" and function() return filtergc("table", {}, false) end)
-        or (typeof(getgc) == "function" and function() return getgc(true) end)
-
-    if searchGC and typeof(debug.getupvalue) == "function" then
-        local ok, tables = pcall(searchGC)
-        if ok and type(tables) == "table" then
-            for _, tbl in ipairs(tables) do
-                if typeof(tbl) == "table" then
-                    local ok2, fire = pcall(rawget, tbl, "FireServer")
-                    if ok2 and typeof(fire) == "function" and (not islclosure or islclosure(fire)) then
-                        for i = 1, 40 do
-                            local ok3, upval = pcall(debug.getupvalue, fire, i)
-                            if ok3 and typeof(upval) == "Instance" and upval:IsA("RemoteEvent") and upval.Name == remoteName then
-                                self.Cache[remoteName] = tbl
-                                return tbl
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
-    return nil
-end
-
-function RemoteEngine:Fire(remoteName, ...)
-    local wrapper = self:GetWrapper(remoteName)
-    if wrapper and typeof(wrapper.FireServer) == "function" then
-        return select(1, pcall(wrapper.FireServer, wrapper, ...))
-    end
-    local direct = ReplicatedStorage:FindFirstChild(remoteName, true)
-    if direct and direct:IsA("RemoteEvent") then
-        return select(1, pcall(direct.FireServer, direct, ...))
-    end
-    return false
-end
-
-function RemoteEngine:UseTool(toolName, moveName, data)
-    if not toolName then return false end
-    return self:Fire("UsedTool", moveName or "UsingMoveCustom", toolName, nil, data or { Clicked = true })
-end
 
 -- [3.4] Non-Anchoring Movement Restrictor (Zero Anchoring)
 local originalWalkSpeed = 16
@@ -282,7 +292,7 @@ local function initFovCircle()
         circleFrame.Name = "FOVCircle"
         circleFrame.AnchorPoint = Vector2.new(0.5, 0.5)
         circleFrame.BackgroundTransparency = 1
-        circleFrame.Size = UDim2.new(0, (State.aimbotFovRadius or 150) * 2, 0, (State.aimbotFovRadius or 150) * 2)
+        circleFrame.Size = UDim2.new(0, State.aimbotFovRadius or 150, 0, State.aimbotFovRadius or 150)
         circleFrame.Position = UDim2.new(0.5, 0, 0.5, 0) -- Fixed to exact mathematical center
         circleFrame.Visible = State.showFovEnabled == true
         circleFrame.Parent = fovGui
@@ -333,13 +343,13 @@ RunService.RenderStepped:Connect(function()
         initFovCircle()
     end
 
-    local radius = State.aimbotFovRadius or 150
+    local fovSize = State.aimbotFovRadius or 150
     local cam = Workspace.CurrentCamera or camera
 
     if fovGuiCircle then
         fovGuiCircle.Visible = isVisible
         if isVisible then
-            fovGuiCircle.Size = UDim2.new(0, radius * 2, 0, radius * 2)
+            fovGuiCircle.Size = UDim2.new(0, fovSize, 0, fovSize)
             fovGuiCircle.Position = UDim2.new(0.5, 0, 0.5, 0)
             if fovGuiStroke then
                 fovGuiStroke.Color = getGuiThemeAccent()
@@ -352,7 +362,7 @@ RunService.RenderStepped:Connect(function()
             fovDrawingCircle.Visible = isVisible
             if isVisible and cam then
                 fovDrawingCircle.Position = cam.ViewportSize / 2
-                fovDrawingCircle.Radius = radius
+                fovDrawingCircle.Radius = fovSize / 2
                 fovDrawingCircle.Color = getGuiThemeAccent()
             end
         end)
@@ -399,29 +409,9 @@ local function isValidAimbotTarget(p, localPlr)
     -- Filter out invulnerable / forcefield-protected targets
     if pChar:FindFirstChildOfClass("ForceField") then return false end
 
-    -- Filter out dead / eliminated / ghost states
-    if pChar:GetAttribute("Eliminated") == true or p:GetAttribute("Eliminated") == true then return false end
-    if pChar:FindFirstChild("Ghost") or pChar:GetAttribute("Ghost") == true then return false end
-
-    -- Filter out downed / crawling players (prevents snapping camera down to floor away from active threats)
-    if pChar:GetAttribute("Crawling") == true or pChar:FindFirstChild("Crawling") ~= nil then return false end
-
-    -- Role / Teammate discrimination:
-    -- 1. Guards do not target other Guards
-    if isPlayerGuard(localPlr) and isPlayerGuard(p) then
-        return false
-    end
-
-    -- 2. Hunters do not target other Hunters
-    if isPlayerHunter(localPlr) and isPlayerHunter(p) then
-        return false
-    end
-
-    -- 3. Team check: Teammates on the same team (in team-based game modes)
+    -- Clean team check: only filter out if both players are on the same assigned team
     if localPlr.Team and p.Team and localPlr.Team == p.Team then
-        if not isPlayerHunter(localPlr) and not isPlayerGuard(localPlr) then
-            return false
-        end
+        return false
     end
 
     return true
@@ -453,7 +443,8 @@ local function updateLockedHighlight(targetChar)
     end
     if not lockedHighlight or not lockedHighlight.Parent then
         lockedHighlight = Instance.new("Highlight")
-        lockedHighlight.Name = (typeof(HttpService) == "userdata" and typeof(HttpService.GenerateGUID) == "function" and HttpService:GenerateGUID(false)) or "TargetHighlight"
+        local okGuid, guidStr = pcall(function() return HttpService:GenerateGUID(false) end)
+        lockedHighlight.Name = (okGuid and guidStr) or "TargetHighlight"
         lockedHighlight.FillColor = Color3.fromRGB(46, 204, 113) -- Emerald Green
         lockedHighlight.OutlineColor = Color3.fromRGB(255, 255, 255)
         lockedHighlight.FillTransparency = 0.45
@@ -468,7 +459,8 @@ local function updateLockedHighlight(targetChar)
 end
 
 local function getSmartAimbotTarget(maxFovDistance)
-    maxFovDistance = maxFovDistance or State.aimbotFovRadius or 150
+    local fovDiameter = maxFovDistance or State.aimbotFovRadius or 150
+    local fovRadius = fovDiameter / 2
     local cam = Workspace.CurrentCamera or camera
     local char = localPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
@@ -483,34 +475,24 @@ local function getSmartAimbotTarget(maxFovDistance)
     -- 1. Check if Target Lock is active and we have an existing locked target
     if State.aimbotTargetLock and State.lockedTargetPlayer then
         local p = State.lockedTargetPlayer
-        if isValidAimbotTarget(p, localPlayer) and p.Character then
+        if p and p.Parent and p:IsDescendantOf(Players) and isValidAimbotTarget(p, localPlayer) and p.Character then
             local pChar = p.Character
             local pHrp = pChar:FindFirstChild("HumanoidRootPart")
-            local targetPart
-            if State.aimbotTargetPart == "Head" then
-                targetPart = pChar:FindFirstChild("Head") or pHrp
-            else
-                -- Default & "Torso": Target HumanoidRootPart (exact body center, matches zipbomb.txt)
-                targetPart = pHrp or pChar:FindFirstChild("Torso") or pChar:FindFirstChild("UpperTorso")
-            end
-
-            if targetPart then
-                local screenPos, onScreen = cam:WorldToViewportPoint(targetPart.Position)
-                if onScreen and screenPos.Z > 0 then
-                    local distance2D = (Vector2.new(screenPos.X, screenPos.Y) - aimCenter).Magnitude
-                    if distance2D <= maxFovDistance then
-                        updateLockedHighlight(pChar)
-                        return p, targetPart
-                    end
+            if pHrp then
+                local targetPart = pHrp
+                if State.aimbotTargetPart == "Head" then
+                    targetPart = pChar:FindFirstChild("Head") or pHrp
                 end
+                updateLockedHighlight(pChar)
+                return p, targetPart
             end
         end
-        -- Locked target is no longer valid, died, or moved outside FOV
+        -- Only drop lock if target is dead, left the server, or became invalid
         State.lockedTargetPlayer = nil
         clearLockedHighlight()
     end
 
-    -- 2. Find closest target in FOV (or new target to lock)
+    -- 2. Find closest target in FOV (matching zipbomb.txt closest 3D distance priority)
     local bestTarget = nil
     local bestTargetPart = nil
     local shortest3DDistance = math.huge
@@ -519,22 +501,16 @@ local function getSmartAimbotTarget(maxFovDistance)
         if isValidAimbotTarget(p, localPlayer) then
             local pChar = p.Character
             local pHrp = pChar:FindFirstChild("HumanoidRootPart")
-            local targetPart
+            local targetPart = pHrp
             if State.aimbotTargetPart == "Head" then
                 targetPart = pChar:FindFirstChild("Head") or pHrp
-            else
-                -- Default & "Torso": Target HumanoidRootPart (exact body center, matches zipbomb.txt)
-                targetPart = pHrp or pChar:FindFirstChild("Torso") or pChar:FindFirstChild("UpperTorso")
             end
 
             if targetPart then
-                -- Convert target 3D position to 2D screen coordinate
                 local screenPos, onScreen = cam:WorldToViewportPoint(targetPart.Position)
                 if onScreen and screenPos.Z > 0 then
-                    -- Check if inside the FOV circle (screen distance from aim center)
                     local distance2D = (Vector2.new(screenPos.X, screenPos.Y) - aimCenter).Magnitude
-                    if distance2D <= maxFovDistance then
-                        -- Prioritize target with shortest 3D distance to local player (rusher / closest threat)
+                    if distance2D <= fovRadius then
                         local distance3D = (targetPart.Position - myPos).Magnitude
                         if distance3D < shortest3DDistance then
                             shortest3DDistance = distance3D
@@ -795,187 +771,40 @@ end)
 -- ------------------------------------------------------------------------------
 local CatDalgona = GamesTab:CreateCategory("Dalgona", false, 2)
 
-local oneClickConnection = nil
-local dalgonaCacheParts = {}
-
-local function getDalgonaOutline()
-    local effects = Workspace:FindFirstChild("Effects")
-    if not effects then return nil end
-    for _, child in ipairs(effects:GetChildren()) do
-        if child:IsA("Model") and string.find(child.Name, "Outline") then
-            return child
-        end
-    end
-    return nil
-end
-
-local function restoreDalgonaParts()
-    for part, orig in pairs(dalgonaCacheParts) do
-        if part and part.Parent then
-            pcall(function()
-                part.Position = orig.Position
-                part.Transparency = orig.Transparency
-            end)
-        end
-    end
-    table.clear(dalgonaCacheParts)
-end
-
-CatDalgona:CreateButton("Auto Complete Dalgona", "Instantly completes outline tracing and finalizes cookie", "Complete", function()
-    if not (isCurrentGame("Dalgona") or (localPlayer:FindFirstChild("PlayerGui") and localPlayer.PlayerGui:FindFirstChild("DalgonaUI"))) then
-        notify("Dalgona", "You must be inside Dalgona minigame.")
-        return
-    end
-
-    -- 1. Dispatch network remotes
-    pcall(function()
-        local remotes = ReplicatedStorage:FindFirstChild("Remotes")
-        local dalgonaRemote = remotes and remotes:FindFirstChild("DALGONATEMPREMPTE")
-        if dalgonaRemote and dalgonaRemote:IsA("RemoteEvent") then
-            dalgonaRemote:FireServer({ Completed = true })
-            dalgonaRemote:FireServer({ Success = true })
-        end
-    end)
-
-    -- 2. Scan garbage collector for progress upvalues
-    local getupvalues_ = debug and (debug.getupvalues or debug.get_upvalues) or getupvalues
-    local setupvalue_ = debug and (debug.setupvalue or debug.setup_value) or setupvalue
-    local getconstants_ = debug and (debug.getconstants or debug.get_constants) or getconstants
-
-    local getGcFunc = typeof(filtergc) == "function" and (function() return filtergc("function", {}, false) end) or (typeof(getgc) == "function" and getgc)
-    if getGcFunc and getupvalues_ and setupvalue_ then
-        local funcs = nil
-        pcall(function() funcs = getGcFunc() end)
-        if type(funcs) == "table" then
-            for _, fn in ipairs(funcs) do
-                if type(fn) == "function" then
-                    local ok, consts = pcall(getconstants_, fn)
-                    if ok and type(consts) == "table" then
-                        local hasWrong = table.find(consts, "clicked wrong in dalgona ")
-                        local hasComp = table.find(consts, "Completed")
-                        local hasProg = table.find(consts, "Progress")
-                        if hasWrong or (hasComp and hasProg) then
-                            local ok2, upvals = pcall(getupvalues_, fn)
-                            if ok2 and type(upvals) == "table" then
-                                for k, uv in pairs(upvals) do
-                                    if type(uv) == "table" and typeof(uv.FireServer) == "function" then
-                                        pcall(uv.FireServer, uv, { Completed = true })
-                                        pcall(uv.FireServer, uv, { Success = true })
-                                    end
-                                    if type(uv) == "number" and uv >= 0 and uv <= 5000 then
-                                        pcall(setupvalue_, fn, k, 999999)
-                                    end
-                                    if type(uv) == "boolean" and uv == true then
-                                        pcall(setupvalue_, fn, k, false)
-                                    end
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
-
-    -- 3. Visual and state completion for outline parts
-    pcall(function()
-        local outline = getDalgonaOutline()
-        if outline then
-            for _, child in ipairs(outline:GetChildren()) do
-                if child:IsA("BasePart") then
-                    child:SetAttribute("Done", true)
-                    child.Color = Color3.fromRGB(0, 255, 0)
-                    child.Material = Enum.Material.Neon
-                    child.Transparency = 0
-                    child.Name = "DalgonaClickPart"
-                end
-            end
-        end
-    end)
-
-    -- 4. Reset camera and close DalgonaUI
-    pcall(function()
-        local cam = Workspace.CurrentCamera
-        if cam then
-            cam.CameraType = Enum.CameraType.Custom
-        end
-        local pGui = localPlayer:FindFirstChild("PlayerGui")
-        local dalUI = pGui and pGui:FindFirstChild("DalgonaUI")
-        if dalUI then
-            dalUI.Enabled = false
-        end
-    end)
-
-    notify("Dalgona", "Dalgona Completed Successfully")
-end)
-
-CatDalgona:CreateToggle("One Click Complete", "Teleports outline hitboxes directly under cursor", false, function(enabled)
-    State.oneClickDalgonaEnabled = enabled
-    if enabled then
-        if oneClickConnection then oneClickConnection:Disconnect() end
-        oneClickConnection = RunService.RenderStepped:Connect(function()
-            if not State.oneClickDalgonaEnabled then return end
-            if not (isCurrentGame("Dalgona") or (localPlayer:FindFirstChild("PlayerGui") and localPlayer.PlayerGui:FindFirstChild("DalgonaUI"))) then
-                if next(dalgonaCacheParts) then
-                    restoreDalgonaParts()
-                end
-                return
-            end
-
-            pcall(function()
-                local m = mouse or localPlayer:GetMouse()
-                local hitPos = m and m.Hit and m.Hit.Position
-                if not hitPos then
-                    local char = localPlayer.Character
-                    local root = char and char:FindFirstChild("HumanoidRootPart")
-                    if root then hitPos = root.Position end
-                end
-                if not hitPos then return end
-
-                local outline = getDalgonaOutline()
-                if outline then
-                    for _, child in ipairs(outline:GetChildren()) do
-                        if child:IsA("BasePart") and not child:GetAttribute("Done") then
-                            if not dalgonaCacheParts[child] then
-                                dalgonaCacheParts[child] = { Position = child.Position, Transparency = child.Transparency }
-                            end
-                            child.Position = hitPos
-                            child.Transparency = 1
-                        end
-                    end
-                end
-            end)
-        end)
-        notify("Dalgona", "One Click Complete engaged. Click anywhere on cookie.")
-    else
-        if oneClickConnection then
-            pcall(function() oneClickConnection:Disconnect() end)
-            oneClickConnection = nil
-        end
-        restoreDalgonaParts()
-        notify("Dalgona", "Hitbox repositioning disabled.")
-    end
-end)
+local dalgonaCrackGen = 0
+local dalgonaScannedFuncs = setmetatable({}, { __mode = "k" })
+local dalgonaNeutralizedFuncs = setmetatable({}, { __mode = "k" })
 
 CatDalgona:CreateToggle("Anti-Crack Dalgona", "Neutralizes breakage failure functions and clamps crack progress", false, function(enabled)
     State.antiCrackDalgonaEnabled = enabled
+    dalgonaCrackGen += 1
+    local gen = dalgonaCrackGen
+    table.clear(dalgonaScannedFuncs)
+    table.clear(dalgonaNeutralizedFuncs)
+
+    if Threads.dalgonaCrackLoop then
+        pcall(task.cancel, Threads.dalgonaCrackLoop)
+        Threads.dalgonaCrackLoop = nil
+    end
+
     if enabled then
-        -- 1. Free Lighter Attribute (heated needle stops stress cracking)
-        pcall(function() localPlayer:SetAttribute("HasLighter", true) end)
+        Threads.dalgonaCrackLoop = task.spawn(function()
+            local getupvalues_ = debug and (debug.getupvalues or debug.get_upvalues) or getupvalues
+            local setupvalue_ = debug and (debug.setupvalue or debug.setup_value) or setupvalue
+            local getconstants_ = debug and (debug.getconstants or debug.get_constants) or getconstants
+            local noop = function() end
+            local lastGcScan = 0
 
-        -- 2. Failure Function Neutralizer & Hitbox Magnet Loop (Ported from ref1 lines 1715-1820)
-        if not Threads.dalgonaCrackLoop then
-            Threads.dalgonaCrackLoop = task.spawn(function()
-                local getupvalues_ = debug and (debug.getupvalues or debug.get_upvalues) or getupvalues
-                local setupvalue_ = debug and (debug.setupvalue or debug.setup_value) or setupvalue
-                local getconstants_ = debug and (debug.getconstants or debug.get_constants) or getconstants
-                local noop = function() end
+            while State.antiCrackDalgonaEnabled and gen == dalgonaCrackGen do
+                local playerGui = localPlayer:FindFirstChild("PlayerGui")
+                local dalgonaUI = playerGui and playerGui:FindFirstChild("DalgonaUI")
+                local inDalgona = isCurrentGameNormalized("dalgona") or (dalgonaUI ~= nil and dalgonaUI:IsA("ScreenGui") and dalgonaUI.Enabled == true)
 
-                while State.antiCrackDalgonaEnabled do
-                    -- Strictly gated to Dalgona minigame (matches ref1 line 1724 fn4("Dalgona"))
-                    if isCurrentGame("Dalgona") then
-                        -- Full Garbage Collection Scanner & Upvalue Neutralizer (ref1 lines 1730-1795)
-                        -- Uses safe upvalue neutralization (setupvalue) without modifying function pointers or hooks
+                if inDalgona then
+                    -- 1. Throttled GC Scanner & Upvalue Neutralizer (inspects only unseen closures)
+                    local now = tick()
+                    if (now - lastGcScan) >= 0.5 then
+                        lastGcScan = now
                         pcall(function()
                             local funcs = nil
                             if typeof(filtergc) == "function" then
@@ -987,11 +816,12 @@ CatDalgona:CreateToggle("Anti-Crack Dalgona", "Neutralizes breakage failure func
 
                             if type(funcs) == "table" and getconstants_ then
                                 for _, fn in ipairs(funcs) do
-                                    if type(fn) == "function" then
+                                    if type(fn) == "function" and not dalgonaScannedFuncs[fn] and not dalgonaNeutralizedFuncs[fn] then
+                                        dalgonaScannedFuncs[fn] = true
                                         local ok, consts = pcall(getconstants_, fn)
                                         if ok and type(consts) == "table" then
-                                            -- Neutralize upvalues in wrong click handler (ref1 lines 1771-1795)
                                             if table.find(consts, "clicked wrong in dalgona ") and getupvalues_ and setupvalue_ then
+                                                dalgonaNeutralizedFuncs[fn] = true
                                                 local ok2, upvals = pcall(getupvalues_, fn)
                                                 if ok2 and type(upvals) == "table" then
                                                     for k, uv in pairs(upvals) do
@@ -1013,62 +843,27 @@ CatDalgona:CreateToggle("Anti-Crack Dalgona", "Neutralizes breakage failure func
                                 end
                             end
                         end)
-
-                        -- 3. Hitbox Magnetism: Expand outline hitboxes and magnetize to cursor
-                        pcall(function()
-                            local outline = getDalgonaOutline()
-                            if outline then
-                                local m = mouse or localPlayer:GetMouse()
-                                local hitPos = m and m.Hit and m.Hit.Position
-
-                                for _, part in ipairs(outline:GetChildren()) do
-                                    if part:IsA("BasePart") and not part:GetAttribute("Done") then
-                                        if not dalgonaCacheParts[part] then
-                                            dalgonaCacheParts[part] = { Position = part.Position, Transparency = part.Transparency }
-                                        end
-                                        part.CanTouch = true
-                                        part.CanCollide = false
-                                        if hitPos and (part.Position - hitPos).Magnitude < 10 then
-                                            part.Position = hitPos
-                                        end
-                                    end
-                                end
-                            end
-                        end)
-
-                        -- 4. Clamp Crack & Stress Progress Bars to 0
-                        pcall(function()
-                            local playerGui = localPlayer:FindFirstChild("PlayerGui")
-                            local dalgonaUI = playerGui and playerGui:FindFirstChild("DalgonaUI")
-                            if dalgonaUI then
-                                local breathing = dalgonaUI:FindFirstChild("Breathing")
-                                local crackBar = breathing and breathing:FindFirstChild("CrackProgressBar")
-                                if crackBar and crackBar:FindFirstChild("Holder") and crackBar.Holder:FindFirstChild("Fill") then
-                                    crackBar.Holder.Fill.Size = UDim2.new(0, 0, 1, 0)
-                                end
-                                local stressBar = dalgonaUI:FindFirstChild("StressBar")
-                                if stressBar then
-                                    local fill = stressBar:FindFirstChild("Fill") or stressBar:FindFirstChild("Bar")
-                                    if fill and fill:IsA("GuiObject") then
-                                        fill.Size = UDim2.new(0, 0, fill.Size.Y.Scale, fill.Size.Y.Offset)
-                                    end
-                                end
-                            end
-                        end)
                     end
-                    task.wait(0.2)
+
+                    -- 2. Clamp Crack Progress Bar to 0 (no hitbox teleportation / no Free Lighter write)
+                    pcall(function()
+                        if dalgonaUI then
+                            local breathing = dalgonaUI:FindFirstChild("Breathing")
+                            local crackBar = breathing and breathing:FindFirstChild("CrackProgressBar")
+                            if crackBar and crackBar:FindFirstChild("Holder") and crackBar.Holder:FindFirstChild("Fill") then
+                                crackBar.Holder.Fill.Size = UDim2.new(0, 0, 1, 0)
+                            end
+                        end
+                    end)
                 end
+                task.wait(0.2)
+            end
+            if Threads.dalgonaCrackLoop and coroutine.running() == Threads.dalgonaCrackLoop then
                 Threads.dalgonaCrackLoop = nil
-            end)
-        end
+            end
+        end)
         notify("Dalgona", "Anti-Crack active.", 3)
     else
-        if Threads.dalgonaCrackLoop then
-            pcall(task.cancel, Threads.dalgonaCrackLoop)
-            Threads.dalgonaCrackLoop = nil
-        end
-        restoreDalgonaParts()
-        pcall(function() localPlayer:SetAttribute("HasLighter", nil) end)
         notify("Dalgona", "Anti-Crack disabled.")
     end
 end)
@@ -1142,7 +937,7 @@ local function firePentathlonRemote(action, data)
     return true
 end
 
-CatPentathlon:CreateSlider("Ddakji Throw Strength", "Sets power percentage for Ddakji throws", 10, 100, 100, function(val)
+CatPentathlon:CreateSlider("Ddakji Throw Strength", "Sets power percentage for Ddakji throws", 10, 100, 100, 1, function(val)
     State.ddakjiThrowStrength = val
 end)
 
@@ -1538,30 +1333,46 @@ local function safePhysicsTeleport(targetCFrame)
     end)
 end
 
-local function isHideAndSeekActive()
-    return isCurrentGame("HideAndSeek") or (Workspace:FindFirstChild("HideAndSeekMap") ~= nil)
+local HNS_HYSTERESIS_SEC = 3.0
+local globalHnsState = { lastPositive = 0 }
+local staminaHnsState = { lastPositive = 0 }
+local spikeHnsState = { lastPositive = 0 }
+
+local function isHideAndSeekActiveWithState(hnsState)
+    local positive = getHideAndSeekEvidence()
+    local now = tick()
+    if positive then
+        hnsState.lastPositive = now
+        return true
+    end
+    return hnsState.lastPositive > 0 and (now - hnsState.lastPositive) < HNS_HYSTERESIS_SEC
 end
 
--- [1] Infinite Stamina (Strict HideAndSeek-gated StaminaVal threshold clamp)
+local function isHideAndSeekActive()
+    return isHideAndSeekActiveWithState(globalHnsState)
+end
+
+-- [1] Infinite Stamina (Strict HideAndSeek-gated StaminaVal/Stamina pin)
 CatHideSeek:CreateToggle("Infinite Stamina", "Maintains sprint stamina safely inside Hide & Seek", false, function(enabled)
     State.infiniteStaminaEnabled = enabled
+    staminaHnsState.lastPositive = 0
     if Threads.staminaConn then
         pcall(function() Threads.staminaConn:Disconnect() end)
         Threads.staminaConn = nil
     end
 
     if enabled then
+        logHideAndSeekDiagnostic("Infinite Stamina")
         Threads.staminaConn = RunService.RenderStepped:Connect(function()
-            if not State.infiniteStaminaEnabled or not isHideAndSeekActive() then
+            if not State.infiniteStaminaEnabled or not isHideAndSeekActiveWithState(staminaHnsState) then
                 return
             end
             local char = localPlayer.Character
             if not char then return end
-            local sVal = char:FindFirstChild("StaminaVal")
+            local sVal = char:FindFirstChild("StaminaVal") or char:FindFirstChild("Stamina")
             if sVal and (sVal:IsA("NumberValue") or sVal:IsA("IntValue")) then
-                -- Refill at a natural threshold to prevent flat-max invariant detection
-                if sVal.Value < 45 then
-                    sVal.Value = 90
+                if sVal.Value < 98 then
+                    sVal.Value = 100
                 end
             end
         end)
@@ -1571,11 +1382,21 @@ CatHideSeek:CreateToggle("Infinite Stamina", "Maintains sprint stamina safely in
     end
 end)
 
--- [2] Anti Spike (True 8-corner world AABB platform + recursive late-child hazard strip)
--- Note: Platform footprint is capped at 80 studs per axis; unusually large monolithic hazards are bounded to prevent corridor obstruction.
+-- [2] Anti Spike (True 8-corner world AABB platform + container decomposition + recursive late-child hazard strip)
 local createdSpikePlatforms = {}
+local spikeContainers = {}
 local spikeDescendantConn = nil
 local spikeGen = 0
+
+local function clearSpikeContainers()
+    for container, conn in pairs(spikeContainers) do
+        if conn then
+            pcall(function() conn:Disconnect() end)
+        end
+        spikeContainers[container] = nil
+    end
+    table.clear(spikeContainers)
+end
 
 local function isInsideHumanoidModel(inst)
     if not inst then return false end
@@ -1673,6 +1494,7 @@ local function destroyHazardEntry(root)
 end
 
 local function clearSpikePlatforms()
+    clearSpikeContainers()
     local roots = {}
     for root in pairs(createdSpikePlatforms) do
         table.insert(roots, root)
@@ -1741,9 +1563,11 @@ local function scheduleHazardRefresh(root)
     end)
 end
 
-local function protectHazard(arg, skipImmediateRefresh)
+local function protectHazard(arg, skipImmediateRefresh, forceHazard, depth)
+    depth = depth or 0
     if not arg or not arg.Parent or arg.Name == "SafeSpikePlatform" then return end
     if isInsideHumanoidModel(arg) then return end
+    if depth > 4 then return end
 
     local trackedAnc = findTrackedHazardAncestor(arg)
     if trackedAnc then
@@ -1769,7 +1593,47 @@ local function protectHazard(arg, skipImmediateRefresh)
     if string.find(name, "trapezoid") or string.find(name, "strap") or string.find(name, "exitdoor") then
         return
     end
-    if not (string.find(name, "spike") or string.find(name, "kill") or string.find(name, "trap") or string.find(name, "hazard")) then
+    local nameMatched = string.find(name, "spike") or string.find(name, "kill") or string.find(name, "trap") or string.find(name, "hazard")
+    if not forceHazard and not nameMatched then
+        return
+    end
+
+    if forceHazard and arg:IsA("BasePart") and not nameMatched then
+        local hasTouch = arg:FindFirstChildOfClass("TouchTransmitter") ~= nil or arg:FindFirstChild("TouchInterest") ~= nil
+        local sz = arg.Size
+        local isSmallPart = (sz.X <= 12 and sz.Y <= 12 and sz.Z <= 12)
+        if not hasTouch and not isSmallPart then
+            return
+        end
+    end
+
+    -- Decompose Folders, oversize Models (>80 studs), and unnamed forced Models into child hazard roots
+    local shouldDecompose = false
+    if arg:IsA("Folder") then
+        shouldDecompose = true
+    elseif arg:IsA("Model") then
+        if forceHazard and not nameMatched then
+            shouldDecompose = true
+        else
+            local box = computeHazardWorldAABB(arg)
+            if box and ((box.maxX - box.minX) > 80 or (box.maxZ - box.minZ) > 80) then
+                shouldDecompose = true
+            end
+        end
+    end
+
+    if shouldDecompose then
+        if not spikeContainers[arg] then
+            local genAtBind = spikeGen
+            spikeContainers[arg] = arg.ChildAdded:Connect(function(newChild)
+                if State.antiSpikeEnabled and genAtBind == spikeGen and isHideAndSeekActiveWithState(spikeHnsState) then
+                    protectHazard(newChild, false, true, depth + 1)
+                end
+            end)
+        end
+        for _, ch in ipairs(arg:GetChildren()) do
+            protectHazard(ch, skipImmediateRefresh, true, depth + 1)
+        end
         return
     end
 
@@ -1815,6 +1679,7 @@ end
 
 CatHideSeek:CreateToggle("Anti Spike", "Spawns walkable level safety platforms above spike hazards", false, function(enabled)
     State.antiSpikeEnabled = enabled
+    spikeHnsState.lastPositive = 0
     spikeGen += 1
     local gen = spikeGen
 
@@ -1824,8 +1689,9 @@ CatHideSeek:CreateToggle("Anti Spike", "Spawns walkable level safety platforms a
     end
 
     if enabled then
+        logHideAndSeekDiagnostic("Anti Spike")
         spikeDescendantConn = Workspace.DescendantAdded:Connect(function(desc)
-            if State.antiSpikeEnabled and gen == spikeGen and isHideAndSeekActive() then
+            if State.antiSpikeEnabled and gen == spikeGen and isHideAndSeekActiveWithState(spikeHnsState) then
                 -- Skip descendants whose ancestor is already tracked (per-hazard descConn handles them without double refresh)
                 if not findTrackedHazardAncestor(desc) then
                     protectHazard(desc, false)
@@ -1836,10 +1702,10 @@ CatHideSeek:CreateToggle("Anti Spike", "Spawns walkable level safety platforms a
         task.spawn(function()
             local wasActive = false
             while State.antiSpikeEnabled and gen == spikeGen do
-                local activeNow = isHideAndSeekActive()
+                local activeNow = isHideAndSeekActiveWithState(spikeHnsState)
                 if activeNow then
                     if not wasActive then
-                        local map = Workspace:FindFirstChild("HideAndSeekMap") or Workspace
+                        local map = findHideAndSeekMap() or Workspace
                         local count = 0
                         for _, desc in ipairs(map:GetDescendants()) do
                             if not State.antiSpikeEnabled or gen ~= spikeGen then break end
@@ -1881,6 +1747,7 @@ CatHideSeek:CreateToggle("Anti Spike", "Spawns walkable level safety platforms a
                         end
                     end
                 elseif wasActive then
+                    clearSpikeContainers()
                     clearSpikePlatforms()
                     wasActive = false
                 end
@@ -1889,6 +1756,7 @@ CatHideSeek:CreateToggle("Anti Spike", "Spawns walkable level safety platforms a
         end)
         notify("Hide & Seek", "Anti Spike engaged. Level safety platforms active.")
     else
+        clearSpikeContainers()
         clearSpikePlatforms()
         notify("Hide & Seek", "Anti Spike dismantled.")
     end
@@ -2568,7 +2436,7 @@ CatSkySquid:CreateToggle("Throw Pole AIM", "Calculates velocity arc to automatic
         if not Threads.poleAimThread then
             Threads.poleAimThread = task.spawn(function()
                 while State.throwPoleAimEnabled do
-                    local target = getSmartAimbotTarget(200)
+                    local target = getSmartAimbotTarget(400)
                     if target and target.Character then
                         local head = target.Character:FindFirstChild("Head")
                         local char = localPlayer.Character
@@ -2589,89 +2457,7 @@ CatSkySquid:CreateToggle("Throw Pole AIM", "Calculates velocity arc to automatic
 end)
 
 -- ==============================================================================
--- [TAB 2: REBEL & GUARD] - WEAPON HOOKS & COMBAT EXPLOITS
--- ==============================================================================
-local RebelTab = Window:CreateTab("Rebel & Guard", "Shield")
-
-local function getEquippedGun()
-    local char = localPlayer.Character
-    if not char then return nil end
-    for _, item in ipairs(char:GetChildren()) do
-        if item:IsA("Tool") and (item:FindFirstChild("InfoClient") or item:FindFirstChild("GunScript") or item:FindFirstChild("Gun")) then
-            return item
-        end
-    end
-    return nil
-end
-
-local function getBestEnemyHead()
-    local myChar = localPlayer.Character
-    local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
-    if not myHrp then return nil end
-
-    local bestHead = nil
-    local bestDist = math.huge
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= localPlayer and p.Character then
-            local pHrp = p.Character:FindFirstChild("HumanoidRootPart")
-            local pHead = p.Character:FindFirstChild("Head")
-            local pHum = p.Character:FindFirstChildOfClass("Humanoid")
-            if pHrp and pHead and pHum and pHum.Health > 0 then
-                local dist = (pHead.Position - myHrp.Position).Magnitude
-                if dist < bestDist and dist < 450 then
-                    bestDist = dist
-                    bestHead = pHead
-                end
-            end
-        end
-    end
-    return bestHead
-end
-
--- ------------------------------------------------------------------------------
--- [2.1] Rebel Weaponry
--- ------------------------------------------------------------------------------
-local CatRebel = RebelTab:CreateCategory("Rebel Weaponry", true, 1)
-
-CatRebel:CreateToggle("Auto Shoot", "Continuously fires equipped firearm at closest enemy head", false, function(enabled)
-    State.autoShootEnabled = enabled
-    if enabled then
-        task.spawn(function()
-            while State.autoShootEnabled do
-                local gun = getEquippedGun()
-                if gun then
-                    local targetHead = getBestEnemyHead()
-                    if targetHead then
-                        local payload = {
-                            gun,
-                            {
-                                RayObject = Ray.new(camera.CFrame.Position, (targetHead.Position - camera.CFrame.Position).Unit * 500),
-                                TargetInstance = targetHead,
-                                ClientRayPosition = targetHead.Position,
-                                HitPart = targetHead,
-                                Normal = Vector3.new(0, 1, 0),
-                                FirePosition = targetHead.Position + Vector3.new(0, 1, 0)
-                            }
-                        }
-                        pcall(function()
-                            local rem = ReplicatedStorage:FindFirstChild("Remotes") and ReplicatedStorage.Remotes:FindFirstChild("FiredGunClient")
-                            if rem then
-                                rem:FireServer(unpack(payload))
-                                rem:FireServer(gun, { ReloadingGun = true })
-                            end
-                        end)
-                    end
-                end
-                task.wait(0.08)
-            end
-        end)
-    end
-end)
-
--- Silent Aim and risky weapon/guard/economy toggles removed for stealth & reliability
-
--- ==============================================================================
--- [TAB 3: COMBAT] - COMBAT ASSISTANCE (NO FLIGHT / NO MOVEMENT EXPLOITS)
+-- [TAB 2: COMBAT] - COMBAT ASSISTANCE (NO FLIGHT / NO MOVEMENT EXPLOITS)
 -- ==============================================================================
 local CombatTab = Window:CreateTab("Combat", "Crosshair")
 local CatCombatAssist = CombatTab:CreateCategory("Combat Assistance", true, 1)
@@ -2679,32 +2465,30 @@ local CatCombatAssist = CombatTab:CreateCategory("Combat Assistance", true, 1)
 local aimbotToggle
 aimbotToggle = CatCombatAssist:CreateToggle("Aimbot", "Smoothly locks camera rotation onto closest opponent", false, function(enabled)
     State.aimbotEnabled = enabled
-    if not enabled then
+    if not enabled and not State.aimbotTargetLock then
         State.lockedTargetPlayer = nil
         clearLockedHighlight()
     end
-    if Threads.aimbotConn then
-        pcall(function() Threads.aimbotConn:Disconnect() end)
-        Threads.aimbotConn = nil
-    end
-    if enabled then
-        Threads.aimbotConn = RunService.RenderStepped:Connect(function()
-            if not State.aimbotEnabled then return end
-            local cam = Workspace.CurrentCamera or camera
-            local char = localPlayer.Character
-            local hrp = char and char:FindFirstChild("HumanoidRootPart")
-            if not cam or not hrp then return end
-
-            local targetPlayer, targetPart = getSmartAimbotTarget(State.aimbotFovRadius or 150)
-            if targetPlayer and targetPart then
-                local camPos = cam.CFrame.Position
-                local targetPos = targetPart.Position
-                local targetCF = CFrame.lookAt(camPos, targetPos)
-                cam.CFrame = cam.CFrame:Lerp(targetCF, 0.6)
-            end
-        end)
-    end
 end)
+
+-- Dedicated RenderStepped connection for Aimbot (matching zipbomb.txt lines 336-350)
+if not Threads.aimbotConn then
+    Threads.aimbotConn = RunService.RenderStepped:Connect(function()
+        if not State.aimbotEnabled and not State.aimbotTargetLock then return end
+        local cam = Workspace.CurrentCamera or camera
+        local char = localPlayer.Character
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if not cam or not hrp then return end
+
+        local targetPlayer, targetPart = getSmartAimbotTarget(State.aimbotFovRadius or 150)
+        if targetPlayer and targetPart then
+            local camPos = cam.CFrame.Position
+            local targetPos = targetPart.Position
+            local targetCF = CFrame.lookAt(camPos, targetPos)
+            cam.CFrame = cam.CFrame:Lerp(targetCF, 0.6)
+        end
+    end)
+end
 
 CatCombatAssist:CreateKeybind("Aimbot Keybind", "Toggle aimbot ON or OFF with assigned key", Enum.KeyCode.E, function(key, isPressed)
     if isPressed then
@@ -2712,6 +2496,10 @@ CatCombatAssist:CreateKeybind("Aimbot Keybind", "Toggle aimbot ON or OFF with as
             aimbotToggle:SetValue(not State.aimbotEnabled, true)
         else
             State.aimbotEnabled = not State.aimbotEnabled
+            if not State.aimbotEnabled and not State.aimbotTargetLock then
+                State.lockedTargetPlayer = nil
+                clearLockedHighlight()
+            end
         end
     else
         State.aimbotKey = key
@@ -2760,33 +2548,64 @@ CatCombatAssist:CreateToggle("Show FOV", "Displays visual lock-on circle matchin
     end
 end)
 
-CatCombatAssist:CreateSlider("FOV Radius", "Scales lock-on search radius and visual FOV circle", 30, 500, 150, function(val)
+CatCombatAssist:CreateSlider("FOV Size", "Scales lock-on search radius and visual FOV circle", 10, 500, 150, 1, function(val)
     State.aimbotFovRadius = val
     if fovGuiCircle then
-        fovGuiCircle.Size = UDim2.new(0, val * 2, 0, val * 2)
+        fovGuiCircle.Size = UDim2.new(0, val, 0, val)
     end
     if fovDrawingCircle then
-        pcall(function() fovDrawingCircle.Radius = val end)
+        pcall(function() fovDrawingCircle.Radius = val / 2 end)
     end
 end)
 
+local qteGen = 0
 CatCombatAssist:CreateToggle("Auto QTE Event", "Bypasses quick time events with 100% success", false, function(enabled)
     State.autoQTEEnabled = enabled
+    qteGen += 1
+    local gen = qteGen
+
+    if Threads.autoQteThread then
+        pcall(task.cancel, Threads.autoQteThread)
+        Threads.autoQteThread = nil
+    end
+
     if enabled then
-        task.spawn(function()
+        Threads.autoQteThread = task.spawn(function()
+            local qteMod = nil
             pcall(function()
-                local qteMod = require(ReplicatedStorage.Modules.HBGQTE)
-                if type(qteMod) == "table" and qteMod.Prompt then
-                    local origPrompt = qteMod.Prompt
-                    qteMod.Prompt = function(arg, ...)
-                        if State.autoQTEEnabled and arg and arg.SuccessRemote then
-                            arg.SuccessRemote:FireServer(true)
-                            return true
-                        end
-                        return origPrompt(arg, ...)
-                    end
+                local modules = ReplicatedStorage:WaitForChild("Modules", 5)
+                local hbgQte = modules and modules:WaitForChild("HBGQTE", 5)
+                if hbgQte then
+                    qteMod = require(hbgQte)
                 end
             end)
+
+            if not (State.autoQTEEnabled and gen == qteGen) then return end
+            if type(qteMod) ~= "table" or typeof(qteMod.Pressed) ~= "function" then
+                notify("Combat", "HBGQTE module unavailable.")
+                return
+            end
+
+            local pressed = {}
+            while State.autoQTEEnabled and gen == qteGen do
+                local active = qteMod.ActiveButtons
+                if type(active) == "table" then
+                    for k, btn in pairs(active) do
+                        if not pressed[k] then
+                            pressed[k] = true
+                            pcall(qteMod.Pressed, false, btn)
+                        end
+                    end
+                    for k in pairs(pressed) do
+                        if active[k] == nil then
+                            pressed[k] = nil
+                        end
+                    end
+                else
+                    table.clear(pressed)
+                end
+                task.wait()
+            end
         end)
     end
 end)
@@ -3268,7 +3087,7 @@ local function createOrGetObjectESP(instance, config)
     gui.StudsOffset = Vector3.new(0, config.offsetY or 1.5, 0)
     gui.AlwaysOnTop = true
     gui.LightInfluence = 0
-    gui.MaxDistance = 350
+    gui.MaxDistance = config.maxDistance or 350
     gui.ResetOnSpawn = false
     gui.Enabled = false
     gui.Adornee = instance:IsA("Model") and (instance.PrimaryPart or instance:FindFirstChildWhichIsA("BasePart")) or instance
@@ -3464,35 +3283,164 @@ local function updateExitDoorsESP(localPos, activeObjects)
     end
 end
 
+local ITEM_DROP_FOLDER_NAMES = {
+    drops = true, items = true, pickups = true, loot = true, weapons = true, dropped = true
+}
+local STRICT_WEAPON_TOKENS = {
+    revolver = true, baton = true, submachine = true, pistol = true,
+    rifle = true, shotgun = true, knife = true, firearm = true,
+    smg = true, glock = true, ak47 = true, mp5 = true, m4a1 = true, crowbar = true
+}
+local STRICT_BANDAGE_TOKENS = {
+    bandage = true, bandages = true, medkit = true, medbag = true, firstaid = true
+}
+local LOOSE_WEAPON_SUBSTRS = {
+    "revolver", "gun", "baton", "submachine", "pistol", "rifle", "shotgun", "knife", "weapon", "mp5", "smg", "ammo", "bat"
+}
+local LOOSE_BANDAGE_SUBSTRS = {
+    "bandage", "medkit", "medbag", "firstaid", "heal"
+}
+
+local cachedItemCandidates = {}
+local lastItemScanTime = 0
+
+local function hasHumanoidAncestor(inst)
+    local cur = inst
+    while cur and cur ~= Workspace do
+        if cur:IsA("Model") and (Players:GetPlayerFromCharacter(cur) or cur:FindFirstChildOfClass("Humanoid")) then
+            return true
+        end
+        cur = cur.Parent
+    end
+    return false
+end
+
+local function tokenizeItemName(name)
+    if type(name) ~= "string" then return {} end
+    local spaced = string.gsub(name, "([%l])([%u])", "%1 %2")
+    spaced = string.gsub(spaced, "([%u])([%u][%l])", "%1 %2")
+    local tokens = {}
+    for tok in string.gmatch(string.lower(spaced), "[%a%d]+") do
+        tokens[tok] = true
+    end
+    return tokens
+end
+
+local function matchesStrictTokens(tokens, tokenSet)
+    for tok in pairs(tokens) do
+        if tokenSet[tok] then
+            return true
+        end
+        local stem = string.match(tok, "^(%a%a%a+)%d+$")
+        if stem and tokenSet[stem] then
+            return true
+        end
+    end
+    return false
+end
+
+local function matchesAnySubstr(nameLower, list)
+    for _, sub in ipairs(list) do
+        if string.find(nameLower, sub, 1, true) then
+            return true
+        end
+    end
+    return false
+end
+
+local function classifyItemInstance(inst, inDropFolder)
+    if not inst or not inst.Parent then return nil end
+    if hasHumanoidAncestor(inst) then return nil end
+
+    if inst:FindFirstChild("GunScript") or inst:FindFirstChild("InfoClient") or inst:FindFirstChild("Gun") then
+        return "weapon"
+    end
+
+    local tokens = tokenizeItemName(inst.Name)
+    if matchesStrictTokens(tokens, STRICT_WEAPON_TOKENS) then
+        return "weapon"
+    end
+    if matchesStrictTokens(tokens, STRICT_BANDAGE_TOKENS) or (tokens.first and tokens.aid) or (tokens.med and tokens.kit) then
+        return "bandage"
+    end
+
+    local looseOk = inDropFolder or inst:IsA("Tool") or (inst:FindFirstChild("Handle") ~= nil)
+    if looseOk then
+        local nameLower = string.lower(inst.Name)
+        if matchesAnySubstr(nameLower, LOOSE_WEAPON_SUBSTRS) then
+            return "weapon"
+        elseif matchesAnySubstr(nameLower, LOOSE_BANDAGE_SUBSTRS) then
+            return "bandage"
+        end
+    end
+
+    return nil
+end
+
+local function rebuildItemCandidates()
+    table.clear(cachedItemCandidates)
+    local addedSet = {}
+
+    local function tryAddCandidate(inst, inDropFolder)
+        if not inst or addedSet[inst] then return end
+        if not (inst:IsA("Tool") or inst:IsA("Model") or inst:IsA("BasePart")) then return end
+
+        local anc = inst.Parent
+        while anc and anc ~= Workspace do
+            if addedSet[anc] then return end
+            anc = anc.Parent
+        end
+
+        local kind = classifyItemInstance(inst, inDropFolder)
+        if kind then
+            addedSet[inst] = true
+            table.insert(cachedItemCandidates, { inst = inst, kind = kind })
+        end
+    end
+
+    for _, ch in ipairs(Workspace:GetChildren()) do
+        if ITEM_DROP_FOLDER_NAMES[normalizeGameName(ch.Name)] then
+            for _, desc in ipairs(ch:GetDescendants()) do
+                tryAddCandidate(desc, true)
+            end
+        else
+            tryAddCandidate(ch, false)
+        end
+    end
+
+    local fx = Workspace:FindFirstChild("Effects")
+    if fx then
+        for _, desc in ipairs(fx:GetDescendants()) do
+            local inDrop = desc.Parent ~= nil and ITEM_DROP_FOLDER_NAMES[normalizeGameName(desc.Parent.Name)] or false
+            tryAddCandidate(desc, inDrop)
+        end
+    end
+end
+
 local function updateItemsESP(localPos, activeObjects)
     if not State.espItemsEnabled then return end
 
-    local function checkItem(inst)
-        if not inst or not inst.Parent then return end
-        if inst.Parent:FindFirstChildOfClass("Humanoid") then
-            return
-        end
+    local now = tick()
+    if (now - lastItemScanTime) >= 0.6 then
+        lastItemScanTime = now
+        rebuildItemCandidates()
+    end
 
-        local isWeapon = false
-        local isBandage = false
-        local nameLower = string.lower(inst.Name)
-
-        if string.find(nameLower, "revolver") or string.find(nameLower, "gun") or string.find(nameLower, "baton") or string.find(nameLower, "submachine") or inst:FindFirstChild("GunScript") or inst:FindFirstChild("InfoClient") then
-            isWeapon = true
-        elseif string.find(nameLower, "bandage") or string.find(nameLower, "medkit") then
-            isBandage = true
-        end
-
-        if isWeapon or isBandage then
-            local part = inst:IsA("BasePart") and inst or (inst:IsA("Model") and (inst.PrimaryPart or inst:FindFirstChildWhichIsA("BasePart"))) or (inst:IsA("Tool") and (inst:FindFirstChild("Handle") or inst:FindFirstChildWhichIsA("BasePart")))
+    for _, itemEntry in ipairs(cachedItemCandidates) do
+        local inst = itemEntry.inst
+        if inst and inst.Parent and inst:IsDescendantOf(Workspace) then
+            local part = inst:IsA("BasePart") and inst
+                or (inst:IsA("Model") and (inst.PrimaryPart or inst:FindFirstChild("Handle") or inst:FindFirstChildWhichIsA("BasePart", true)))
+                or (inst:IsA("Tool") and (inst:FindFirstChild("Handle") or inst:FindFirstChildWhichIsA("BasePart", true)))
             if part then
                 local dist = math.floor((part.Position - localPos).Magnitude)
-                if dist <= 250 then
+                if dist <= 450 then
                     activeObjects[inst] = true
-                    local itemConfig = isWeapon and {
+                    local itemConfig = (itemEntry.kind == "weapon") and {
                         showLabel = false,
                         iconSize = 22,
                         offsetY = 1.4,
+                        maxDistance = 500,
                         bgColor = Color3.fromRGB(26, 16, 12),
                         strokeColor = Color3.fromRGB(255, 120, 40),
                         textColor = Color3.fromRGB(255, 160, 80),
@@ -3502,6 +3450,7 @@ local function updateItemsESP(localPos, activeObjects)
                         showLabel = false,
                         iconSize = 22,
                         offsetY = 1.2,
+                        maxDistance = 500,
                         bgColor = Color3.fromRGB(10, 25, 20),
                         strokeColor = Color3.fromRGB(0, 245, 160),
                         textColor = Color3.fromRGB(80, 255, 190),
@@ -3515,20 +3464,11 @@ local function updateItemsESP(localPos, activeObjects)
                     entry.stroke.Color = itemConfig.strokeColor
                     entry.capsule.BackgroundColor3 = itemConfig.bgColor
                     entry.icon.Image = itemConfig.icon
+                    entry.gui.MaxDistance = itemConfig.maxDistance
                     entry.gui.Adornee = part
                     entry.gui.Enabled = true
                 end
             end
-        end
-    end
-
-    for _, ch in ipairs(Workspace:GetChildren()) do
-        if ch:IsA("Tool") or ch:IsA("Model") then checkItem(ch) end
-    end
-    local fx = Workspace:FindFirstChild("Effects")
-    if fx then
-        for _, ch in ipairs(fx:GetChildren()) do
-            if ch:IsA("Tool") or ch:IsA("Model") then checkItem(ch) end
         end
     end
 end
@@ -3540,9 +3480,10 @@ local function refreshAllWorldObjects(localPos)
     updateItemsESP(localPos, activeObjects)
 
     for inst, entry in pairs(objectEspInstances) do
-        if not activeObjects[inst] or not inst.Parent then
+        local stillInWorld = inst.Parent ~= nil and inst:IsDescendantOf(Workspace)
+        if not activeObjects[inst] or not stillInWorld then
             if entry.gui then entry.gui.Enabled = false end
-            if not inst.Parent then
+            if not stillInWorld then
                 if entry.gui then entry.gui:Destroy() end
                 objectEspInstances[inst] = nil
             end
@@ -3786,14 +3727,16 @@ end)
 
 CatESP:CreateToggle("ESP Weapons & Items", "Displays ground weapon and bandage drops with distance", false, function(enabled)
     State.espItemsEnabled = enabled
-    startESPThread()
+    lastItemScanTime = 0
     if not enabled then
+        table.clear(cachedItemCandidates)
         for inst, entry in pairs(objectEspInstances) do
             if string.sub(inst.Name, 1, 10) ~= "DroppedKey" and not string.find(string.upper(inst.Name), "EXIT") and entry.gui then
                 entry.gui.Enabled = false
             end
         end
     else
+        startESPThread()
         refreshESP()
     end
 end)
@@ -3810,31 +3753,7 @@ local UtilitiesTab = Window:CreateTab("Utilities", "Wrench")
 -- ------------------------------------------------------------------------------
 local CatProtection = UtilitiesTab:CreateCategory("Performance & Protection", true, 1)
 
--- Movement Check Bypass (Manual toggle: only sends DashRequest when explicitly turned on)
-CatProtection:CreateToggle("Bypass Movement Checks", "Sends natural movement signals to prevent anti-cheat kicks", false, function(enabled)
-    State.bypassMovementChecks = enabled
-    if enabled then
-        if not Threads.bypassThread then
-            Threads.bypassThread = task.spawn(function()
-                while State.bypassMovementChecks do
-                    pcall(function()
-                        local rem = ReplicatedStorage:FindFirstChild("Remotes")
-                        rem = rem and rem:FindFirstChild("DashRequest") or ReplicatedStorage:FindFirstChild("DashRequest", true)
-                        if rem and rem:IsA("RemoteEvent") then
-                            rem:FireServer()
-                        end
-                    end)
-                    task.wait(1)
-                end
-                Threads.bypassThread = nil
-            end)
-        end
-    else
-        Threads.bypassThread = nil
-    end
-end)
-
--- Patched/risky protections (Anti Push / Anti Ragdoll, Anti-AFK, Infinite Jump) removed
+-- Patched/risky protections (Bypass Movement Checks, Anti Push / Anti Ragdoll, Anti-AFK, Infinite Jump) removed
 
 CatProtection:CreateToggle("Instant Interact", "Bypasses proximity prompt hold times", false, function(enabled)
     State.instantInteractEnabled = enabled
